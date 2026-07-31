@@ -5,7 +5,15 @@ import { runMigrations } from './infrastructure/db/migrate.js';
 import { resolveLlmProviderName } from './infrastructure/providers/llm/index.js';
 
 async function main() {
+  console.log('boot: starting', {
+    nodeEnv: process.env.NODE_ENV,
+    port: process.env.PORT,
+    hostEnv: process.env.HOST,
+    railway: Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_SERVICE_ID),
+  });
+
   const config = loadConfig();
+  console.log('boot: config ok');
 
   // On Railway, migrations run in releaseCommand — skip here so we listen immediately.
   const onRailway = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_SERVICE_ID);
@@ -18,7 +26,9 @@ async function main() {
   }
 
   const db = createDb(config.DATABASE_URL);
+  console.log('boot: db client created');
   const { app } = await buildApp({ config, db });
+  console.log('boot: app built');
 
   const shutdown = async (signal: string) => {
     app.log.info(`Shutting down (${signal})`);
@@ -41,16 +51,16 @@ async function main() {
     );
   }
 
-  // Must match Railway public networking target port (you set 3000).
-  // Always bind 0.0.0.0 on Railway — localhost makes the public proxy return 502.
-  const port = Number(process.env.PORT) || config.PORT;
-  const host = onRailway ? '0.0.0.0' : config.HOST || '0.0.0.0';
+  // Railway healthcheck / public proxy must reach this process.
+  // Never bind localhost — that causes "service unavailable" on healthcheck.
+  const port = Number(process.env.PORT) || config.PORT || 3000;
+  const host = '0.0.0.0';
   console.log(`Binding ${host}:${port} (PORT env=${process.env.PORT ?? 'unset'})`);
   await app.listen({ port, host });
   app.log.info(`Listening on ${host}:${port}`);
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error('boot: fatal', err);
   process.exit(1);
 });
