@@ -6,7 +6,12 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default('0.0.0.0'),
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  // Railway / some hosts may set NODE_ENV=deployment; normalize to production.
+  NODE_ENV: z
+    .string()
+    .default('development')
+    .transform((v) => (v === 'deployment' || v === 'prod' ? 'production' : v))
+    .pipe(z.enum(['development', 'test', 'production'])),
   LOG_LEVEL: z.string().default('info'),
   DEVICE_AUTH_PEPPER: z.string().min(8),
   REGISTER_TOKEN: z.string().optional(),
