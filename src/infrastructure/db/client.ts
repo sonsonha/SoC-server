@@ -15,6 +15,7 @@ export function createDb(databaseUrl: string): Db {
     /\.railway\.app/i.test(databaseUrl);
   sqlClient = postgres(databaseUrl, {
     max: 10,
+    connect_timeout: 10,
     ssl: needsSsl ? 'require' : undefined,
   });
   dbInstance = drizzle(sqlClient, { schema });
