@@ -5,7 +5,14 @@ import path from 'node:path';
 import { loadConfig } from '../../config.js';
 
 export async function runMigrations(databaseUrl: string): Promise<void> {
-  const client = postgres(databaseUrl, { max: 1 });
+  const needsSsl =
+    /sslmode=require/i.test(databaseUrl) ||
+    /\.rlwy\.net/i.test(databaseUrl) ||
+    /\.railway\.app/i.test(databaseUrl);
+  const client = postgres(databaseUrl, {
+    max: 1,
+    ssl: needsSsl ? 'require' : undefined,
+  });
   const db = drizzle(client);
   const migrationsFolder =
     process.env.MIGRATIONS_FOLDER ?? path.resolve(process.cwd(), 'drizzle');

@@ -8,7 +8,15 @@ let sqlClient: ReturnType<typeof postgres> | null = null;
 let dbInstance: Db | null = null;
 
 export function createDb(databaseUrl: string): Db {
-  sqlClient = postgres(databaseUrl, { max: 10 });
+  // Railway Postgres often requires TLS on the public URL; internal URL may not.
+  const needsSsl =
+    /sslmode=require/i.test(databaseUrl) ||
+    /\.rlwy\.net/i.test(databaseUrl) ||
+    /\.railway\.app/i.test(databaseUrl);
+  sqlClient = postgres(databaseUrl, {
+    max: 10,
+    ssl: needsSsl ? 'require' : undefined,
+  });
   dbInstance = drizzle(sqlClient, { schema });
   return dbInstance;
 }

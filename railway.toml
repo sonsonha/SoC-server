@@ -6,5 +6,5 @@ dockerfilePath = "Dockerfile"
 startCommand = "node dist/index.js"
 releaseCommand = "node dist/infrastructure/db/migrate.js"
 healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
