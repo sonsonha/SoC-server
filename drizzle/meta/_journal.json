@@ -1,0 +1,90 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1720000000000,
+      "tag": "0000_phase00_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1720000001000,
+      "tag": "0001_phase01_vertical_slice",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1720000002000,
+      "tag": "0002_phase02_resource_feedback",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1720000003000,
+      "tag": "0003_phase04_people_waiting_decisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1720000004000,
+      "tag": "0004_phase05_opportunities_exploration",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1720000005000,
+      "tag": "0005_phase06_social_date_logistics",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1720000006000,
+      "tag": "0006_phase07_proactive_fcm",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1720000007000,
+      "tag": "0007_phase09_calendar_maps",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1720000008000,
+      "tag": "0008_phase10_user_model",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1720000009000,
+      "tag": "0009_phase11_learning_tracks",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1720000010000,
+      "tag": "0010_core_day_ux",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1720000011000,
+      "tag": "0011_multi_horizon_planning",
+      "breakpoints": true
+    }
+  ]
+}
