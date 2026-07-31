@@ -77,21 +77,29 @@ export class DeviceService {
   }
 
   async authenticate(deviceId: string, secret: string): Promise<boolean> {
-    const rows = await this.db
-      .select()
-      .from(deviceCredentials)
-      .where(eq(deviceCredentials.id, deviceId))
-      .limit(1);
-    const row = rows[0];
-    if (!row) return false;
-    const ok = verifySecret(secret, this.pepper, row.secretHash);
-    if (ok) {
-      await this.db
-        .update(deviceCredentials)
-        .set({ lastSeenAt: new Date() })
-        .where(eq(deviceCredentials.id, deviceId));
+    // device_credentials.id is uuid — invalid text must not hit Postgres (22P02 → 500).
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deviceId)) {
+      return false;
     }
-    return ok;
+    try {
+      const rows = await this.db
+        .select()
+        .from(deviceCredentials)
+        .where(eq(deviceCredentials.id, deviceId))
+        .limit(1);
+      const row = rows[0];
+      if (!row) return false;
+      const ok = verifySecret(secret, this.pepper, row.secretHash);
+      if (ok) {
+        await this.db
+          .update(deviceCredentials)
+          .set({ lastSeenAt: new Date() })
+          .where(eq(deviceCredentials.id, deviceId));
+      }
+      return ok;
+    } catch {
+      return false;
+    }
   }
 
   async countDevices(): Promise<number> {
