@@ -27,17 +27,22 @@ export async function deviceRoutes(
 
     const body = registerBody.parse(request.body ?? {});
     try {
+      // Personal single-device CoS: allow force replace so a phone can reclaim the slot.
+      // Optional REGISTER_TOKEN still gates who may call this endpoint in production.
       const result = await deps.deviceService.register({
         label: body.label,
-        force: body.force && deps.config.NODE_ENV !== 'production',
+        force: body.force === true,
       });
-      // In production, force is ignored unless NODE_ENV is not production
       return reply.code(201).send(result);
     } catch (err) {
       const e = err as Error & { statusCode?: number; code?: string };
       if (e.statusCode === 409) {
         return reply.code(409).send({
-          error: { code: e.code ?? 'DEVICE_EXISTS', message: e.message },
+          error: {
+            code: e.code ?? 'DEVICE_EXISTS',
+            message:
+              'This cloud backend already has a phone linked. Tap Connect again to replace it with this phone.',
+          },
         });
       }
       throw err;
