@@ -14,8 +14,16 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 }
 
 async function main() {
-  const config = loadConfig();
-  await runMigrations(config.DATABASE_URL);
+  // Release/migrate on Railway only needs DATABASE_URL — do not require full app config
+  // (DEVICE_AUTH_PEPPER etc.) or deploys fail before the service ever starts.
+  const databaseUrl = process.env.DATABASE_URL?.trim();
+  if (!databaseUrl) {
+    // Fall back for local runs that rely on .env via loadConfig()
+    const config = loadConfig();
+    await runMigrations(config.DATABASE_URL);
+  } else {
+    await runMigrations(databaseUrl);
+  }
   console.log('Migrations applied.');
 }
 
