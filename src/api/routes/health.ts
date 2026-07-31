@@ -13,7 +13,7 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       status: dbOk ? 'ok' : 'degraded',
       db: dbOk ? 'ok' : 'error',
       // Bump when deploy behavior changes — used to confirm Railway is on latest code.
-      build: '2026-07-31-bind-0000',
+      build: '2026-07-31-fix-database-url',
       time: new Date().toISOString(),
     });
   });

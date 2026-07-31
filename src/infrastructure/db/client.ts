@@ -8,12 +8,14 @@ let sqlClient: ReturnType<typeof postgres> | null = null;
 let dbInstance: Db | null = null;
 
 export function createDb(databaseUrl: string): Db {
+  // Defensive: strip accidental "DATABASE_URL=" pasted into Railway Value field.
+  const url = databaseUrl.replace(/^DATABASE_URL=/i, '').trim();
   // Railway Postgres often requires TLS on the public URL; internal URL may not.
   const needsSsl =
-    /sslmode=require/i.test(databaseUrl) ||
-    /\.rlwy\.net/i.test(databaseUrl) ||
-    /\.railway\.app/i.test(databaseUrl);
-  sqlClient = postgres(databaseUrl, {
+    /sslmode=require/i.test(url) ||
+    /\.rlwy\.net/i.test(url) ||
+    /\.railway\.app/i.test(url);
+  sqlClient = postgres(url, {
     max: 10,
     connect_timeout: 10,
     ssl: needsSsl ? 'require' : undefined,

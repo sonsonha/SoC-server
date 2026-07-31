@@ -2,14 +2,15 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import path from 'node:path';
-import { loadConfig } from '../../config.js';
+import { loadConfig, normalizeDatabaseUrl } from '../../config.js';
 
 export async function runMigrations(databaseUrl: string): Promise<void> {
+  const url = normalizeDatabaseUrl(databaseUrl);
   const needsSsl =
-    /sslmode=require/i.test(databaseUrl) ||
-    /\.rlwy\.net/i.test(databaseUrl) ||
-    /\.railway\.app/i.test(databaseUrl);
-  const client = postgres(databaseUrl, {
+    /sslmode=require/i.test(url) ||
+    /\.rlwy\.net/i.test(url) ||
+    /\.railway\.app/i.test(url);
+  const client = postgres(url, {
     max: 1,
     ssl: needsSsl ? 'require' : undefined,
   });
@@ -23,13 +24,13 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 async function main() {
   // Release/migrate on Railway only needs DATABASE_URL — do not require full app config
   // (DEVICE_AUTH_PEPPER etc.) or deploys fail before the service ever starts.
-  const databaseUrl = process.env.DATABASE_URL?.trim();
-  if (!databaseUrl) {
+  const raw = process.env.DATABASE_URL?.trim();
+  if (!raw) {
     // Fall back for local runs that rely on .env via loadConfig()
     const config = loadConfig();
     await runMigrations(config.DATABASE_URL);
   } else {
-    await runMigrations(databaseUrl);
+    await runMigrations(raw);
   }
   console.log('Migrations applied.');
 }

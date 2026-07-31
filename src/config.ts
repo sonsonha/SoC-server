@@ -3,7 +3,10 @@ import path from 'node:path';
 import { z } from 'zod';
 
 const envSchema = z.object({
-  DATABASE_URL: z.string().min(1),
+  DATABASE_URL: z
+    .string()
+    .min(1)
+    .transform((v) => normalizeDatabaseUrl(v)),
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default('0.0.0.0'),
   // Railway / some hosts may set NODE_ENV=deployment; normalize to production.
@@ -43,6 +46,23 @@ const envSchema = z.object({
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
+
+/**
+ * Railway UI mistake: pasting `DATABASE_URL=postgresql://...` into the Value field
+ * makes postgres.js throw Invalid URL. Strip accidental `KEY=` prefixes.
+ */
+export function normalizeDatabaseUrl(raw: string): string {
+  let v = raw.trim();
+  if (
+    (v.startsWith('"') && v.endsWith('"')) ||
+    (v.startsWith("'") && v.endsWith("'"))
+  ) {
+    v = v.slice(1, -1).trim();
+  }
+  // Strip accidental "DATABASE_URL=" pasted into the value box.
+  v = v.replace(/^DATABASE_URL=/i, '').trim();
+  return v;
+}
 
 /** Load backend/.env into process.env when keys are unset (no dotenv dependency). */
 export function loadDotEnv(cwd: string = process.cwd()): void {
