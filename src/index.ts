@@ -42,8 +42,9 @@ async function main() {
   }
 
   // Must match Railway public networking target port (you set 3000).
+  // Always bind 0.0.0.0 on Railway — localhost makes the public proxy return 502.
   const port = Number(process.env.PORT) || config.PORT;
-  const host = config.HOST || '0.0.0.0';
+  const host = onRailway ? '0.0.0.0' : config.HOST || '0.0.0.0';
   console.log(`Binding ${host}:${port} (PORT env=${process.env.PORT ?? 'unset'})`);
   await app.listen({ port, host });
   app.log.info(`Listening on ${host}:${port}`);

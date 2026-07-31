@@ -75,13 +75,16 @@ export type BuiltApp = {
 };
 
 export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
+  const usePretty =
+    deps.config.NODE_ENV === 'development' &&
+    !process.env.RAILWAY_ENVIRONMENT &&
+    !process.env.RAILWAY_SERVICE_ID;
+
   const app = Fastify({
     logger: {
       level: deps.config.LOG_LEVEL,
-      transport:
-        deps.config.NODE_ENV === 'development'
-          ? { target: 'pino-pretty', options: { colorize: true } }
-          : undefined,
+      // pino-pretty is a devDependency and is omitted from the production image.
+      transport: usePretty ? { target: 'pino-pretty', options: { colorize: true } } : undefined,
     },
     genReqId: () => randomUUID(),
     requestIdHeader: 'x-request-id',
