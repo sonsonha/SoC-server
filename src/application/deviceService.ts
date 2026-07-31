@@ -46,7 +46,9 @@ export class DeviceService {
   async register(opts: { label?: string; force?: boolean }): Promise<RegisterResult> {
     const existing = await this.db.select({ id: deviceCredentials.id }).from(deviceCredentials).limit(1);
     if (existing.length > 0 && !opts.force) {
-      const err = new Error('A device is already registered. Pass force=true to replace (dev only).');
+      const err = new Error(
+        'A device is already registered. Send force=true to replace the linked phone.',
+      );
       (err as Error & { statusCode?: number; code?: string }).statusCode = 409;
       (err as Error & { code?: string }).code = 'DEVICE_EXISTS';
       throw err;
