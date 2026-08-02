@@ -19,6 +19,48 @@ const connectBody = z.object({
   code: z.string().nullish(),
 });
 
+function defaultRedirectUri(config: AppConfig): string {
+  if (config.GOOGLE_OAUTH_REDIRECT_URI) return config.GOOGLE_OAUTH_REDIRECT_URI;
+  const publicUrl = process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : null;
+  if (publicUrl) return `${publicUrl}/v1/integrations/google/oauth-callback`;
+  return 'http://localhost:3000/v1/integrations/google/oauth-callback';
+}
+
+async function exchangeGoogleCode(
+  config: AppConfig,
+  code: string,
+): Promise<{
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  scope?: string;
+}> {
+  const redirect = defaultRedirectUri(config);
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: config.GOOGLE_OAUTH_CLIENT_ID!,
+      client_secret: config.GOOGLE_OAUTH_CLIENT_SECRET!,
+      redirect_uri: redirect,
+      grant_type: 'authorization_code',
+    }),
+  });
+  if (!tokenRes.ok) {
+    const detail = await tokenRes.text();
+    throw Object.assign(new Error(detail), { statusCode: 400, code: 'OAUTH_EXCHANGE_FAILED' });
+  }
+  return (await tokenRes.json()) as {
+    access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+    scope?: string;
+  };
+}
+
 export async function integrationRoutes(
   app: FastifyInstance,
   deps: {
@@ -40,24 +82,87 @@ export async function integrationRoutes(
         message: 'Use POST /v1/integrations/google/connect with mode=fake',
       });
     }
-    const redirect =
-      deps.config.GOOGLE_OAUTH_REDIRECT_URI ?? 'http://localhost:3000/v1/integrations/google/callback';
+    const redirect = defaultRedirectUri(deps.config);
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
     url.searchParams.set('client_id', deps.config.GOOGLE_OAUTH_CLIENT_ID);
     url.searchParams.set('redirect_uri', redirect);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set(
       'scope',
-      'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events',
+      'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events',
     );
     url.searchParams.set('access_type', 'offline');
     url.searchParams.set('prompt', 'consent');
-    return reply.send({ mode: 'oauth', url: url.toString() });
+    return reply.send({ mode: 'oauth', url: url.toString(), redirectUri: redirect });
+  });
+
+  /**
+   * Google redirects here after consent (browser). No device auth — single-user prototype.
+   * Set GOOGLE_OAUTH_REDIRECT_URI to this exact URL in Google Cloud Console + Railway.
+   */
+  app.get('/v1/integrations/google/oauth-callback', async (request, reply) => {
+    const q = z
+      .object({
+        code: z.string().optional(),
+        error: z.string().optional(),
+      })
+      .parse(request.query ?? {});
+    if (q.error) {
+      return reply
+        .type('text/html')
+        .code(400)
+        .send(`<h1>Google Calendar connect failed</h1><p>${q.error}</p>`);
+    }
+    if (!q.code) {
+      return reply.type('text/html').code(400).send('<h1>Missing OAuth code</h1>');
+    }
+    if (!deps.config.GOOGLE_OAUTH_CLIENT_ID || !deps.config.GOOGLE_OAUTH_CLIENT_SECRET) {
+      return reply
+        .type('text/html')
+        .code(500)
+        .send('<h1>Server missing GOOGLE_OAUTH_CLIENT_ID / SECRET</h1>');
+    }
+    try {
+      const tokens = await exchangeGoogleCode(deps.config, q.code);
+      await deps.tokenService.saveGoogleCalendarTokens({
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token ?? null,
+        expiresAt: tokens.expires_in
+          ? new Date(Date.now() + tokens.expires_in * 1000)
+          : null,
+        scopes: tokens.scope ?? null,
+      });
+      return reply.type('text/html').send(`<!doctype html>
+<html><body style="font-family:system-ui;padding:2rem">
+  <h1>Google Calendar connected</h1>
+  <p>Tokens saved on the server. Return to the app → Plan → <b>Rebuild cloud week</b>.</p>
+  <p>You can close this tab.</p>
+</body></html>`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      app.log.error({ err }, 'oauth-callback failed');
+      return reply
+        .type('text/html')
+        .code(400)
+        .send(`<h1>Token exchange failed</h1><pre>${message}</pre>`);
+    }
   });
 
   app.post('/v1/integrations/google/connect', { preHandler: auth }, async (request, reply) => {
     const body = connectBody.parse(request.body ?? {});
-    if (body.mode === 'fake' || deps.config.USE_FAKE_PROVIDERS) {
+    const liveConfigured =
+      !deps.config.USE_FAKE_PROVIDERS && Boolean(deps.config.GOOGLE_OAUTH_CLIENT_ID);
+
+    if (body.mode === 'fake') {
+      if (liveConfigured) {
+        return reply.code(400).send({
+          error: {
+            code: 'FAKE_DISABLED',
+            message:
+              'Fake calendar is disabled. Open GET /v1/integrations/google/auth-url and complete OAuth in the browser.',
+          },
+        });
+      }
       await deps.tokenService.saveGoogleCalendarTokens({
         accessToken: 'fake-access-token',
         refreshToken: 'fake-refresh-token',
@@ -82,6 +187,15 @@ export async function integrationRoutes(
       return reply.send({ connected: true, provider: 'google_calendar', mode: 'fake' });
     }
 
+    if (deps.config.USE_FAKE_PROVIDERS) {
+      return reply.code(400).send({
+        error: {
+          code: 'FAKE_PROVIDERS',
+          message: 'Set USE_FAKE_PROVIDERS=false to connect a real Google account',
+        },
+      });
+    }
+
     if (body.accessToken) {
       await deps.tokenService.saveGoogleCalendarTokens({
         accessToken: body.accessToken,
@@ -93,52 +207,32 @@ export async function integrationRoutes(
     }
 
     if (body.code && deps.config.GOOGLE_OAUTH_CLIENT_ID && deps.config.GOOGLE_OAUTH_CLIENT_SECRET) {
-      const redirect =
-        deps.config.GOOGLE_OAUTH_REDIRECT_URI ??
-        'http://localhost:3000/v1/integrations/google/callback';
-      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          code: body.code,
-          client_id: deps.config.GOOGLE_OAUTH_CLIENT_ID,
-          client_secret: deps.config.GOOGLE_OAUTH_CLIENT_SECRET,
-          redirect_uri: redirect,
-          grant_type: 'authorization_code',
-        }),
-      });
-      if (!tokenRes.ok) {
+      try {
+        const tokens = await exchangeGoogleCode(deps.config, body.code);
+        await deps.tokenService.saveGoogleCalendarTokens({
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token ?? null,
+          expiresAt: tokens.expires_in
+            ? new Date(Date.now() + tokens.expires_in * 1000)
+            : null,
+          scopes: tokens.scope ?? null,
+        });
+        return reply.send({ connected: true, provider: 'google_calendar', mode: 'oauth' });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
         return reply.code(400).send({
-          error: { code: 'OAUTH_EXCHANGE_FAILED', message: await tokenRes.text() },
+          error: { code: 'OAUTH_EXCHANGE_FAILED', message },
         });
       }
-      const tokens = (await tokenRes.json()) as {
-        access_token: string;
-        refresh_token?: string;
-        expires_in?: number;
-        scope?: string;
-      };
-      await deps.tokenService.saveGoogleCalendarTokens({
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token ?? null,
-        expiresAt: tokens.expires_in
-          ? new Date(Date.now() + tokens.expires_in * 1000)
-          : null,
-        scopes: tokens.scope ?? null,
-      });
-      return reply.send({ connected: true, provider: 'google_calendar', mode: 'oauth' });
     }
 
     return reply.code(400).send({
-      error: { code: 'INVALID_CONNECT', message: 'Provide mode=fake, accessToken, or OAuth code' },
+      error: { code: 'INVALID_CONNECT', message: 'Provide accessToken, OAuth code, or complete browser OAuth' },
     });
   });
 
   app.post('/v1/integrations/google/callback', { preHandler: auth }, async (request, reply) => {
     const body = z.object({ code: z.string() }).parse(request.body ?? {});
-    // Reuse connect with OAuth code
-    const connect = connectBody.parse({ mode: 'token', code: body.code });
-    (request as { body: unknown }).body = connect;
     const result = await app.inject({
       method: 'POST',
       url: '/v1/integrations/google/connect',
@@ -149,19 +243,19 @@ export async function integrationRoutes(
   });
 
   app.get('/v1/integrations/status', { preHandler: auth }, async (_request, reply) => {
-    const connected = await deps.tokenService.isGoogleCalendarConnected();
-    const stateRows = await deps.db
-      .select()
-      .from(calendarSyncState)
-      .limit(1);
+    const tokens = await deps.tokenService.getGoogleCalendarTokens();
+    const isFakeToken = tokens?.accessToken === 'fake-access-token';
+    const connected = Boolean(tokens) && !isFakeToken;
+    const stateRows = await deps.db.select().from(calendarSyncState).limit(1);
     const lastSyncAt = stateRows[0]?.lastSyncAt?.toISOString() ?? null;
     const lastReplanAt = stateRows[0]?.lastReplanAt?.toISOString() ?? null;
+    const mode = deps.config.USE_FAKE_PROVIDERS || isFakeToken ? 'fake' : connected ? 'live' : 'none';
     return reply.send({
       providers: [
         {
           provider: 'google_calendar',
-          connected,
-          mode: deps.config.USE_FAKE_PROVIDERS ? 'fake' : 'live',
+          connected: connected || (deps.config.USE_FAKE_PROVIDERS && Boolean(tokens)),
+          mode,
           lastSyncAt,
           lastReplanAt,
           calendarChanged: Boolean(lastReplanAt && lastSyncAt && lastReplanAt > lastSyncAt),
