@@ -160,12 +160,24 @@ export async function integrationRoutes(
 
     if (body.mode === 'fake') {
       if (liveConfigured) {
-        return reply.code(400).send({
-          error: {
-            code: 'FAKE_DISABLED',
-            message:
-              'Fake calendar is disabled. Open GET /v1/integrations/google/auth-url and complete OAuth in the browser.',
-          },
+        // Don't 400 — return the browser URL so the app (or a retry) can open OAuth.
+        const redirect = defaultRedirectUri(deps.config);
+        const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+        url.searchParams.set('client_id', deps.config.GOOGLE_OAUTH_CLIENT_ID!);
+        url.searchParams.set('redirect_uri', redirect);
+        url.searchParams.set('response_type', 'code');
+        url.searchParams.set(
+          'scope',
+          'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events',
+        );
+        url.searchParams.set('access_type', 'offline');
+        url.searchParams.set('prompt', 'consent');
+        return reply.send({
+          connected: false,
+          provider: 'google_calendar',
+          mode: 'oauth_required',
+          authUrl: url.toString(),
+          redirectUri: redirect,
         });
       }
       await deps.tokenService.saveGoogleCalendarTokens({
