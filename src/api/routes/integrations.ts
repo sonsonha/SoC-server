@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AppConfig } from '../../config.js';
 import type { DeviceService } from '../../application/deviceService.js';
 import { createDeviceAuthHook } from '../middleware/deviceAuth.js';
@@ -20,12 +20,13 @@ const connectBody = z.object({
 });
 
 function defaultRedirectUri(config: AppConfig): string {
-  if (config.GOOGLE_OAUTH_REDIRECT_URI) return config.GOOGLE_OAUTH_REDIRECT_URI;
+  // Prefer explicit Railway var. Keep /callback (your current value) working via GET handler.
+  if (config.GOOGLE_OAUTH_REDIRECT_URI) return config.GOOGLE_OAUTH_REDIRECT_URI.trim();
   const publicUrl = process.env.RAILWAY_PUBLIC_DOMAIN
     ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
     : null;
-  if (publicUrl) return `${publicUrl}/v1/integrations/google/oauth-callback`;
-  return 'http://localhost:3000/v1/integrations/google/oauth-callback';
+  if (publicUrl) return `${publicUrl}/v1/integrations/google/callback`;
+  return 'http://localhost:3000/v1/integrations/google/callback';
 }
 
 async function exchangeGoogleCode(
@@ -98,9 +99,10 @@ export async function integrationRoutes(
 
   /**
    * Google redirects here after consent (browser). No device auth — single-user prototype.
-   * Set GOOGLE_OAUTH_REDIRECT_URI to this exact URL in Google Cloud Console + Railway.
+   * Accept both /oauth-callback and /callback so Railway/Google URI typos don't brick connect.
+   * GOOGLE_OAUTH_REDIRECT_URI must match Google Cloud Console character-for-character.
    */
-  app.get('/v1/integrations/google/oauth-callback', async (request, reply) => {
+  const handleOAuthRedirect = async (request: FastifyRequest, reply: FastifyReply) => {
     const q = z
       .object({
         code: z.string().optional(),
@@ -146,7 +148,10 @@ export async function integrationRoutes(
         .code(400)
         .send(`<h1>Token exchange failed</h1><pre>${message}</pre>`);
     }
-  });
+  };
+
+  app.get('/v1/integrations/google/oauth-callback', handleOAuthRedirect);
+  app.get('/v1/integrations/google/callback', handleOAuthRedirect);
 
   app.post('/v1/integrations/google/connect', { preHandler: auth }, async (request, reply) => {
     const body = connectBody.parse(request.body ?? {});
