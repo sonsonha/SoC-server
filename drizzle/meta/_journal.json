@@ -92,6 +92,13 @@
       "when": 1720000012000,
       "tag": "0012_calendar_planner_v2",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1720000013000,
+      "tag": "0013_calendar_planner_schema_repair",
+      "breakpoints": true
     }
   ]
 }

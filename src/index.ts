@@ -15,14 +15,14 @@ async function main() {
   const config = loadConfig();
   console.log('boot: config ok');
 
-  // On Railway, migrations run in releaseCommand — skip here so we listen immediately.
-  const onRailway = Boolean(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_SERVICE_ID);
-  if (!onRailway) {
-    try {
-      await runMigrations(config.DATABASE_URL);
-    } catch (err) {
-      console.error('Startup migration failed (continuing to listen):', err);
-    }
+  // The release command normally handles this on Railway. Running the idempotent
+  // migrator here as well prevents a healthy-looking deployment from serving an
+  // older schema when a platform release hook is skipped.
+  try {
+    await runMigrations(config.DATABASE_URL);
+  } catch (err) {
+    console.error('Startup migration failed:', err);
+    if (config.NODE_ENV === 'production') throw err;
   }
 
   const db = createDb(config.DATABASE_URL);
