@@ -127,7 +127,7 @@ Auth header: `Authorization: Device <deviceId>:<deviceSecret>`
 
 ## Planner V2 web access
 
-Planner V2 accepts the existing device header and, when `PLANNER_WEB_TOKEN` is configured, a server-to-server `Authorization: Bearer <token>` header from the private web proxy. Never put this token in browser code or a `NEXT_PUBLIC_*` variable.
+Planner V2 accepts the existing device header and signed requests from the private web proxy. Production uses a short-lived Ed25519 request signature: the public verification key ships with the backend while the private key remains in the web host. `PLANNER_WEB_TOKEN` remains available as a local-development fallback. Never put either credential in browser code or a `NEXT_PUBLIC_*` variable.
 
 | Method | Path | Purpose |
 |--------|------|---------|
