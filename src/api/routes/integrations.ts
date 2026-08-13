@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AppConfig } from '../../config.js';
 import type { DeviceService } from '../../application/deviceService.js';
 import { createDeviceAuthHook } from '../middleware/deviceAuth.js';
+import { createPlannerAuthHook } from '../middleware/plannerAuth.js';
 import type { IntegrationTokenService } from '../../modules/integrations/tokenService.js';
 import type { CalendarPullService } from '../../modules/integrations/calendarPullService.js';
 import type { FakeCalendarProvider } from '../../infrastructure/providers/calendar/fakeCalendarProvider.js';
@@ -18,6 +20,48 @@ const connectBody = z.object({
   expiresAt: z.string().datetime().nullish(),
   code: z.string().nullish(),
 });
+
+const WEB_PLANNER_RETURN_URL = 'https://personal-os-calendar-planner.terryson821.chatgpt.site';
+const OAUTH_STATE_MAX_AGE_MS = 10 * 60_000;
+
+function googleAuthUrl(config: AppConfig, state?: string): { url: string; redirectUri: string } {
+  const redirectUri = defaultRedirectUri(config);
+  const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  url.searchParams.set('client_id', config.GOOGLE_OAUTH_CLIENT_ID!);
+  url.searchParams.set('redirect_uri', redirectUri);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set(
+    'scope',
+    'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events',
+  );
+  url.searchParams.set('access_type', 'offline');
+  url.searchParams.set('prompt', 'consent');
+  if (state) url.searchParams.set('state', state);
+  return { url: url.toString(), redirectUri };
+}
+
+export function createWebOAuthState(secret: string, now: number = Date.now()): string {
+  const payload = `${now}.${randomBytes(18).toString('base64url')}`;
+  const signature = createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+export function verifyWebOAuthState(
+  state: string,
+  secret: string,
+  now: number = Date.now(),
+): boolean {
+  const [timestamp, nonce, signature] = state.split('.');
+  if (!timestamp || !nonce || !signature) return false;
+  const createdAt = Number(timestamp);
+  if (!Number.isFinite(createdAt) || Math.abs(now - createdAt) > OAUTH_STATE_MAX_AGE_MS) return false;
+  const expected = createHmac('sha256', secret)
+    .update(`${timestamp}.${nonce}`)
+    .digest('base64url');
+  const left = Buffer.from(signature);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
 
 function defaultRedirectUri(config: AppConfig): string {
   // Prefer explicit Railway var. Keep /callback (your current value) working via GET handler.
@@ -74,6 +118,7 @@ export async function integrationRoutes(
   },
 ): Promise<void> {
   const auth = createDeviceAuthHook(deps.deviceService);
+  const plannerAuth = createPlannerAuthHook(deps.deviceService, deps.config.PLANNER_WEB_TOKEN);
 
   app.get('/v1/integrations/google/auth-url', { preHandler: auth }, async (_request, reply) => {
     if (deps.config.USE_FAKE_PROVIDERS || !deps.config.GOOGLE_OAUTH_CLIENT_ID) {
@@ -83,18 +128,17 @@ export async function integrationRoutes(
         message: 'Use POST /v1/integrations/google/connect with mode=fake',
       });
     }
-    const redirect = defaultRedirectUri(deps.config);
-    const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    url.searchParams.set('client_id', deps.config.GOOGLE_OAUTH_CLIENT_ID);
-    url.searchParams.set('redirect_uri', redirect);
-    url.searchParams.set('response_type', 'code');
-    url.searchParams.set(
-      'scope',
-      'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events',
-    );
-    url.searchParams.set('access_type', 'offline');
-    url.searchParams.set('prompt', 'consent');
-    return reply.send({ mode: 'oauth', url: url.toString(), redirectUri: redirect });
+    const result = googleAuthUrl(deps.config);
+    return reply.send({ mode: 'oauth', url: result.url, redirectUri: result.redirectUri });
+  });
+
+  app.get('/v2/integrations/google/auth-url', { preHandler: plannerAuth }, async (_request, reply) => {
+    if (deps.config.USE_FAKE_PROVIDERS || !deps.config.GOOGLE_OAUTH_CLIENT_ID) {
+      return reply.send({ mode: 'fake', url: null });
+    }
+    const state = createWebOAuthState(deps.config.DEVICE_AUTH_PEPPER);
+    const result = googleAuthUrl(deps.config, state);
+    return reply.send({ mode: 'oauth', url: result.url, redirectUri: result.redirectUri });
   });
 
   /**
@@ -107,6 +151,7 @@ export async function integrationRoutes(
       .object({
         code: z.string().optional(),
         error: z.string().optional(),
+        state: z.string().optional(),
       })
       .parse(request.query ?? {});
     if (q.error) {
@@ -134,6 +179,9 @@ export async function integrationRoutes(
           : null,
         scopes: tokens.scope ?? null,
       });
+      if (q.state && verifyWebOAuthState(q.state, deps.config.DEVICE_AUTH_PEPPER)) {
+        return reply.redirect(`${WEB_PLANNER_RETURN_URL}/?google=connected`);
+      }
       return reply.type('text/html').send(`<!doctype html>
 <html><body style="font-family:system-ui;padding:2rem">
   <h1>Google Calendar connected</h1>
@@ -161,23 +209,13 @@ export async function integrationRoutes(
     if (body.mode === 'fake') {
       if (liveConfigured) {
         // Don't 400 — return the browser URL so the app (or a retry) can open OAuth.
-        const redirect = defaultRedirectUri(deps.config);
-        const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-        url.searchParams.set('client_id', deps.config.GOOGLE_OAUTH_CLIENT_ID!);
-        url.searchParams.set('redirect_uri', redirect);
-        url.searchParams.set('response_type', 'code');
-        url.searchParams.set(
-          'scope',
-          'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events',
-        );
-        url.searchParams.set('access_type', 'offline');
-        url.searchParams.set('prompt', 'consent');
+        const result = googleAuthUrl(deps.config);
         return reply.send({
           connected: false,
           provider: 'google_calendar',
           mode: 'oauth_required',
-          authUrl: url.toString(),
-          redirectUri: redirect,
+          authUrl: result.url,
+          redirectUri: result.redirectUri,
         });
       }
       await deps.tokenService.saveGoogleCalendarTokens({
@@ -259,7 +297,7 @@ export async function integrationRoutes(
     return reply.code(result.statusCode).send(result.json());
   });
 
-  app.get('/v1/integrations/status', { preHandler: auth }, async (_request, reply) => {
+  const integrationStatus = async (_request: FastifyRequest, reply: FastifyReply) => {
     const tokens = await deps.tokenService.getGoogleCalendarTokens();
     const isFakeToken = tokens?.accessToken === 'fake-access-token';
     const connected = Boolean(tokens) && !isFakeToken;
@@ -279,9 +317,16 @@ export async function integrationRoutes(
         },
       ],
     });
-  });
+  };
+
+  app.get('/v1/integrations/status', { preHandler: auth }, integrationStatus);
+  app.get('/v2/integrations/status', { preHandler: plannerAuth }, integrationStatus);
 
   app.delete('/v1/integrations/google', { preHandler: auth }, async (_request, reply) => {
+    await deps.tokenService.clearGoogleCalendar();
+    return reply.send({ connected: false });
+  });
+  app.delete('/v2/integrations/google', { preHandler: plannerAuth }, async (_request, reply) => {
     await deps.tokenService.clearGoogleCalendar();
     return reply.send({ connected: false });
   });
@@ -294,8 +339,11 @@ export async function integrationRoutes(
     return reply.send({ events });
   });
 
-  app.post('/v1/calendar/sync', { preHandler: auth }, async (_request, reply) => {
+  const syncCalendar = async (_request: FastifyRequest, reply: FastifyReply) => {
     const summary = await deps.calendarPull.pull();
     return reply.send({ ok: true, summary });
-  });
+  };
+
+  app.post('/v1/calendar/sync', { preHandler: auth }, syncCalendar);
+  app.post('/v2/calendar/sync', { preHandler: plannerAuth }, syncCalendar);
 }
