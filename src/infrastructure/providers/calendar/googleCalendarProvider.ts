@@ -7,7 +7,7 @@ type TokenBundle = {
   expiresAt?: Date | null;
 };
 
-const COS_CALENDAR_NAME = 'Personal Chief of Staff';
+const COS_CALENDAR_NAME = 'Personal Planner';
 
 /**
  * Google Calendar adapter.
@@ -146,6 +146,9 @@ export class GoogleCalendarProvider implements CalendarProvider {
         start: { dateTime: new Date(event.startEpochMs).toISOString() },
         end: { dateTime: new Date(event.endEpochMs).toISOString() },
         location: event.location ?? undefined,
+        extendedProperties: event.appMetadata
+          ? { private: event.appMetadata }
+          : undefined,
       };
       const existingId = event.eventId?.startsWith('cos-') ? undefined : event.eventId;
       const url = existingId

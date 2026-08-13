@@ -8,6 +8,7 @@ export { tasks } from './tasks.js';
 export { inboxItems } from './inboxItems.js';
 export { dailyPlans } from './dailyPlans.js';
 export { planBlocks } from './planBlocks.js';
+export { timeBlocks } from './plannerV2.js';
 export { preparations } from './preparations.js';
 export { resources, resourceCandidates } from './resources.js';
 export { resourceFeedback } from './resourceFeedback.js';

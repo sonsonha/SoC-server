@@ -17,6 +17,8 @@ const envSchema = z.object({
     .pipe(z.enum(['development', 'test', 'production'])),
   LOG_LEVEL: z.string().default('info'),
   DEVICE_AUTH_PEPPER: z.string().min(8),
+  // Optional server-to-server credential used by the private Personal OS web app.
+  PLANNER_WEB_TOKEN: z.string().min(32).optional(),
   REGISTER_TOKEN: z.string().optional(),
   WORKER_ENABLED: z
     .string()

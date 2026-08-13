@@ -80,6 +80,7 @@ curl -s http://localhost:3000/v1/ping \
 |----------|----------|-------------|
 | `DATABASE_URL` | yes | Postgres connection string |
 | `DEVICE_AUTH_PEPPER` | yes | Pepper for secret hashing (min 8 chars) |
+| `PLANNER_WEB_TOKEN` | no | Server-only bearer token for the private Personal OS web proxy (min 32 chars) |
 | `PORT` | no | Default `3000` |
 | `HOST` | no | Default `0.0.0.0` |
 | `NODE_ENV` | no | `development` / `test` / `production` |
@@ -123,6 +124,16 @@ npm test
 | POST | `/v1/sync/push` | Device |
 
 Auth header: `Authorization: Device <deviceId>:<deviceSecret>`
+
+## Planner V2 web access
+
+Planner V2 accepts the existing device header and, when `PLANNER_WEB_TOKEN` is configured, a server-to-server `Authorization: Bearer <token>` header from the private web proxy. Never put this token in browser code or a `NEXT_PUBLIC_*` variable.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/v2/planner?from&to` | Tasks, projects, goals, time blocks, and external events |
+| POST / PATCH | `/v2/tasks`, `/v2/tasks/:id` | Capture and complete tasks |
+| POST / PATCH / DELETE | `/v2/time-blocks`, `/v2/time-blocks/:id` | Schedule, move, and remove planner-owned blocks |
 
 ## Push notifications (Phase 07)
 

@@ -5,6 +5,8 @@ export type CalendarEvent = {
   endEpochMs: number;
   location?: string | null;
   calendarId?: string;
+  /** Private metadata written only on planner-owned event copies. */
+  appMetadata?: Record<string, string>;
 };
 
 export interface CalendarProvider {

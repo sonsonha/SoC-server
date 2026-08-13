@@ -53,6 +53,8 @@ import { learningRoutes } from './api/routes/learning.js';
 import { LearningCurriculumService } from './modules/learning/curriculumService.js';
 import { createPushProvider, NotificationService } from './infrastructure/notifications/index.js';
 import { ProactiveScanService } from './modules/proactive/scanService.js';
+import { PlannerV2Service } from './application/plannerV2Service.js';
+import { plannerV2Routes } from './api/routes/plannerV2.js';
 
 export type AppDeps = {
   config: AppConfig;
@@ -215,6 +217,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   const weekService = new WeekService(deps.db);
   const scanService = new ProactiveScanService(deps.db, jobQueue, notificationService);
   const learningService = new LearningCurriculumService(deps.db, jobQueue);
+  const plannerV2Service = new PlannerV2Service(deps.db, calendarProvider);
   scanService.setLearningService(learningService);
   completionService.setLearningService(learningService);
 
@@ -304,6 +307,11 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     calendarPull,
     calendarProvider,
     db: deps.db,
+  });
+  await plannerV2Routes(app, {
+    deviceService,
+    planner: plannerV2Service,
+    webToken: deps.config.PLANNER_WEB_TOKEN,
   });
 
   if (deps.config.WORKER_ENABLED) {
