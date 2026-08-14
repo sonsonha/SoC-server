@@ -165,6 +165,16 @@ With `USE_FAKE_PROVIDERS=true`, connect with `mode=fake` then sync.
 `calendar.pull` runs every `CALENDAR_PULL_INTERVAL_MS` (15 min) when workers are enabled.
 Maps Distance Matrix overrides travel minutes when `MAPS_API_KEY` is set (15 min cache).
 
+For the browser OAuth flow, create a Google OAuth client with application type **Web
+application** and register this redirect URI exactly (including scheme and path):
+
+`https://YOUR-service.up.railway.app/v1/integrations/google/oauth-callback`
+
+For a personal app left in Google OAuth **Testing**, add the Google account under
+Audience → Test users. Set `GOOGLE_COS_CALENDAR_ID` to keep the requested access to the
+single `calendar.events` scope; without it, calendar discovery/creation scopes are also
+requested.
+
 ## Out of scope (later)
 
 Apple Calendar, mutating EXTERNAL events, meeting-prep from attendees.

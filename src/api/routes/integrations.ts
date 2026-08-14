@@ -23,21 +23,31 @@ const connectBody = z.object({
 
 const WEB_PLANNER_RETURN_URL = 'https://personal-os-calendar-planner.terryson821.chatgpt.site';
 const OAUTH_STATE_MAX_AGE_MS = 10 * 60_000;
+const GOOGLE_CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+const GOOGLE_CALENDAR_MANAGE_SCOPE = 'https://www.googleapis.com/auth/calendar.calendars';
+const GOOGLE_CALENDAR_LIST_SCOPE =
+  'https://www.googleapis.com/auth/calendar.calendarlist.readonly';
 
-function googleAuthUrl(config: AppConfig, state?: string): { url: string; redirectUri: string } {
+export function googleAuthUrl(
+  config: AppConfig,
+  state?: string,
+): { url: string; redirectUri: string; scopes: string[] } {
   const redirectUri = defaultRedirectUri(config);
+  // The configured Personal OS calendar only needs event read/write access. If no
+  // calendar ID is supplied, the provider also needs to find or create one.
+  const scopes = config.GOOGLE_COS_CALENDAR_ID
+    ? [GOOGLE_CALENDAR_EVENTS_SCOPE]
+    : [GOOGLE_CALENDAR_EVENTS_SCOPE, GOOGLE_CALENDAR_MANAGE_SCOPE, GOOGLE_CALENDAR_LIST_SCOPE];
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   url.searchParams.set('client_id', config.GOOGLE_OAUTH_CLIENT_ID!);
   url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set(
-    'scope',
-    'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events',
-  );
+  url.searchParams.set('scope', scopes.join(' '));
   url.searchParams.set('access_type', 'offline');
   url.searchParams.set('prompt', 'consent');
+  url.searchParams.set('include_granted_scopes', 'true');
   if (state) url.searchParams.set('state', state);
-  return { url: url.toString(), redirectUri };
+  return { url: url.toString(), redirectUri, scopes };
 }
 
 export function createWebOAuthState(secret: string, now: number = Date.now()): string {
@@ -69,8 +79,8 @@ function defaultRedirectUri(config: AppConfig): string {
   const publicUrl = process.env.RAILWAY_PUBLIC_DOMAIN
     ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
     : null;
-  if (publicUrl) return `${publicUrl}/v1/integrations/google/callback`;
-  return 'http://localhost:3000/v1/integrations/google/callback';
+  if (publicUrl) return `${publicUrl}/v1/integrations/google/oauth-callback`;
+  return 'http://localhost:3000/v1/integrations/google/oauth-callback';
 }
 
 async function exchangeGoogleCode(
@@ -129,7 +139,12 @@ export async function integrationRoutes(
       });
     }
     const result = googleAuthUrl(deps.config);
-    return reply.send({ mode: 'oauth', url: result.url, redirectUri: result.redirectUri });
+    return reply.send({
+      mode: 'oauth',
+      url: result.url,
+      redirectUri: result.redirectUri,
+      scopes: result.scopes,
+    });
   });
 
   app.get('/v2/integrations/google/auth-url', { preHandler: plannerAuth }, async (_request, reply) => {
@@ -138,7 +153,12 @@ export async function integrationRoutes(
     }
     const state = createWebOAuthState(deps.config.DEVICE_AUTH_PEPPER);
     const result = googleAuthUrl(deps.config, state);
-    return reply.send({ mode: 'oauth', url: result.url, redirectUri: result.redirectUri });
+    return reply.send({
+      mode: 'oauth',
+      url: result.url,
+      redirectUri: result.redirectUri,
+      scopes: result.scopes,
+    });
   });
 
   /**
