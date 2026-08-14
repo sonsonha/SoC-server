@@ -12,8 +12,8 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(200).send({
       status: dbOk ? 'ok' : 'degraded',
       db: dbOk ? 'ok' : 'error',
-      // Bump when deploy behavior changes — used to confirm Railway is on latest code.
-      build: '2026-08-02-oauth-required-url',
+      // Railway injects the deployed commit SHA; local/dev keeps a readable fallback.
+      build: process.env.RAILWAY_GIT_COMMIT_SHA?.slice(0, 7) ?? 'local',
       time: new Date().toISOString(),
     });
   });
