@@ -1,4 +1,4 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, lt } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../../infrastructure/db/client.js';
 import {
@@ -6,8 +6,13 @@ import {
   calendarSyncState,
   dailyPlans,
   planBlocks,
+  tasks,
+  timeBlocks,
 } from '../../infrastructure/db/schema/index.js';
-import type { CalendarProvider } from '../../infrastructure/providers/calendar/types.js';
+import type {
+  CalendarEvent,
+  CalendarProvider,
+} from '../../infrastructure/providers/calendar/types.js';
 import type { JobQueue } from '../../infrastructure/jobs/jobQueue.js';
 import type { NotificationService } from '../../infrastructure/notifications/notificationService.js';
 
@@ -27,9 +32,33 @@ export type CalendarPullSummary = {
   fetched: number;
   upserted: number;
   removed: number;
+  ownedUpdated: number;
+  ownedRemoved: number;
   replannedDates: string[];
   connected: boolean;
 };
+
+export function isPlannerOwnedCalendarEvent(event: CalendarEvent): boolean {
+  return event.appMetadata?.plannerOrigin === 'personal-os' && Boolean(event.appMetadata.timeBlockId);
+}
+
+export function plannerBlockReconciliation(
+  block: {
+    title: string;
+    startEpochMs: number;
+    endEpochMs: number;
+    syncStatus: string;
+  },
+  event?: CalendarEvent,
+): 'remove' | 'update' | 'none' {
+  if (!event) return 'remove';
+  return block.title !== event.title ||
+    block.startEpochMs !== event.startEpochMs ||
+    block.endEpochMs !== event.endEpochMs ||
+    block.syncStatus !== 'SYNCED'
+    ? 'update'
+    : 'none';
+}
 
 export class CalendarPullService {
   constructor(
@@ -47,10 +76,50 @@ export class CalendarPullService {
     const toEpochMs = opts?.toEpochMs ?? now + HORIZON_DAYS * 86_400_000;
 
     if (!connected) {
-      return { fetched: 0, upserted: 0, removed: 0, replannedDates: [], connected: false };
+      return {
+        fetched: 0,
+        upserted: 0,
+        removed: 0,
+        ownedUpdated: 0,
+        ownedRemoved: 0,
+        replannedDates: [],
+        connected: false,
+      };
     }
 
-    const events = await this.calendar.listEvents(fromEpochMs, toEpochMs);
+    const [primaryEvents, cosEvents, plannerOwnedRows] = await Promise.all([
+      this.calendar.listEvents(fromEpochMs, toEpochMs),
+      this.calendar.listCosEvents
+        ? this.calendar.listCosEvents(fromEpochMs, toEpochMs)
+        : Promise.resolve([]),
+      this.db
+        .select()
+        .from(timeBlocks)
+        .where(
+          and(
+            isNull(timeBlocks.deletedAt),
+            lt(timeBlocks.startEpochMs, toEpochMs),
+            gt(timeBlocks.endEpochMs, fromEpochMs),
+          ),
+        ),
+    ]);
+    const allEventsById = new Map(
+      [...primaryEvents, ...cosEvents].map((event) => [event.eventId, event]),
+    );
+    const knownOwnedIds = new Set<string>(
+      plannerOwnedRows.flatMap((row) => row.googleEventId ? [row.googleEventId] : []),
+    );
+    const ownedEventsByBlockId = new Map(
+      [...allEventsById.values()].flatMap((event) => {
+        const blockId = isPlannerOwnedCalendarEvent(event)
+          ? event.appMetadata?.timeBlockId
+          : undefined;
+        return blockId ? [[blockId, event] as const] : [];
+      }),
+    );
+    const events = [...allEventsById.values()].filter(
+      (event) => !knownOwnedIds.has(event.eventId) && !isPlannerOwnedCalendarEvent(event),
+    );
     const existing = await this.db
       .select()
       .from(calendarCommitments)
@@ -59,8 +128,70 @@ export class CalendarPullService {
     const byExternal = new Map(existing.map((r) => [r.externalCalendarEventId, r]));
     const seen = new Set<string>();
     let upserted = 0;
+    let ownedUpdated = 0;
+    let ownedRemoved = 0;
     const touchedDates = new Set<string>();
     let materialChange = false;
+
+    // Personal OS owns these rows, so edits/deletes made directly in Google
+    // reconcile back to the local source of truth instead of being imported as
+    // duplicate locked EXTERNAL commitments.
+    if (this.calendar.listCosEvents) {
+      for (const row of plannerOwnedRows) {
+        const event =
+          (row.googleEventId ? allEventsById.get(row.googleEventId) : undefined) ??
+          ownedEventsByBlockId.get(row.id);
+        // A pending/failed local block that never obtained a Google event ID
+        // has nothing to reconcile yet; retryCalendarSync handles it below.
+        if (!row.googleEventId && !event) continue;
+        const reconciliation = plannerBlockReconciliation(row, event);
+        if (reconciliation === 'remove') {
+          const changedAt = new Date();
+          await this.db
+            .update(timeBlocks)
+            .set({
+              deletedAt: changedAt,
+              syncStatus: 'SYNCED',
+              revision: row.revision + 1,
+              updatedAt: changedAt,
+            })
+            .where(eq(timeBlocks.id, row.id));
+          if (row.taskId) {
+            const taskRows = await this.db.select().from(tasks).where(eq(tasks.id, row.taskId)).limit(1);
+            const task = taskRows[0];
+            if (task && !task.deletedAt && task.status !== 'DONE') {
+              await this.db
+                .update(tasks)
+                .set({ status: 'TODO', revision: task.revision + 1, updatedAt: changedAt })
+                .where(eq(tasks.id, task.id));
+            }
+          }
+          touchedDates.add(dateKey(row.startEpochMs));
+          ownedRemoved += 1;
+          materialChange = true;
+          continue;
+        }
+        if (reconciliation === 'update' && event) {
+          await this.db
+            .update(timeBlocks)
+            .set({
+              title: event.title,
+              startEpochMs: event.startEpochMs,
+              endEpochMs: event.endEpochMs,
+              calendarId: event.calendarId ?? row.calendarId,
+              googleEventId: event.eventId,
+              syncStatus: 'SYNCED',
+              revision: row.revision + 1,
+              updatedAt: new Date(),
+            })
+            .where(eq(timeBlocks.id, row.id));
+          touchedDates.add(dateKey(row.startEpochMs));
+          touchedDates.add(dateKey(event.startEpochMs));
+          ownedUpdated += 1;
+          materialChange = true;
+        }
+      }
+    }
 
     for (const event of events) {
       seen.add(event.eventId);
@@ -181,9 +312,11 @@ export class CalendarPullService {
     }
 
     return {
-      fetched: events.length,
+      fetched: allEventsById.size,
       upserted,
       removed,
+      ownedUpdated,
+      ownedRemoved,
       replannedDates,
       connected: true,
     };

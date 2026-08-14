@@ -36,54 +36,75 @@ export class GoogleCalendarProvider implements CalendarProvider {
     return tokens.accessToken;
   }
 
-  async listEvents(fromEpochMs: number, toEpochMs: number): Promise<CalendarEvent[]> {
-    try {
-      const accessToken = await this.bearer();
-      if (!accessToken) return this.fallback.listEvents(fromEpochMs, toEpochMs);
-      const timeMin = new Date(fromEpochMs).toISOString();
-      const timeMax = new Date(toEpochMs).toISOString();
-      const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
-      url.searchParams.set('timeMin', timeMin);
-      url.searchParams.set('timeMax', timeMax);
+  private async fetchEvents(
+    accessToken: string,
+    calendarId: string,
+    fromEpochMs: number,
+    toEpochMs: number,
+  ): Promise<CalendarEvent[]> {
+    const events: CalendarEvent[] = [];
+    let pageToken: string | undefined;
+    do {
+      const url = new URL(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+      );
+      url.searchParams.set('timeMin', new Date(fromEpochMs).toISOString());
+      url.searchParams.set('timeMax', new Date(toEpochMs).toISOString());
       url.searchParams.set('singleEvents', 'true');
       url.searchParams.set('orderBy', 'startTime');
+      url.searchParams.set('maxResults', '2500');
+      if (pageToken) url.searchParams.set('pageToken', pageToken);
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (!res.ok) {
-        console.error('google.listEvents failed', res.status, await res.text());
-        return this.fallback.listEvents(fromEpochMs, toEpochMs);
+        const detail = await res.text();
+        throw new Error(`Google Calendar read failed: ${res.status} ${detail}`);
       }
       const data = (await res.json()) as {
+        nextPageToken?: string;
         items?: Array<{
           id?: string;
           summary?: string;
           location?: string;
           start?: { dateTime?: string; date?: string };
           end?: { dateTime?: string; date?: string };
+          extendedProperties?: { private?: Record<string, string> };
         }>;
       };
-      return (data.items ?? []).flatMap((item) => {
+      for (const item of data.items ?? []) {
         const startIso = item.start?.dateTime ?? item.start?.date;
         const endIso = item.end?.dateTime ?? item.end?.date;
-        if (!item.id || !startIso || !endIso) return [];
+        if (!item.id || !startIso || !endIso) continue;
         const startEpochMs = new Date(startIso).getTime();
         const endEpochMs = new Date(endIso).getTime();
-        if (Number.isNaN(startEpochMs) || Number.isNaN(endEpochMs)) return [];
-        const event: CalendarEvent = {
+        if (Number.isNaN(startEpochMs) || Number.isNaN(endEpochMs)) continue;
+        events.push({
           eventId: item.id,
           title: item.summary ?? 'Busy',
           startEpochMs,
           endEpochMs,
           location: item.location ?? null,
-          calendarId: 'primary',
-        };
-        return [event];
-      });
-    } catch (err) {
-      console.error('google.listEvents error', err);
-      return this.fallback.listEvents(fromEpochMs, toEpochMs);
-    }
+          calendarId,
+          appMetadata: item.extendedProperties?.private,
+        });
+      }
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+    return events;
+  }
+
+  async listEvents(fromEpochMs: number, toEpochMs: number): Promise<CalendarEvent[]> {
+    const accessToken = await this.bearer();
+    if (!accessToken) return this.fallback.listEvents(fromEpochMs, toEpochMs);
+    return this.fetchEvents(accessToken, 'primary', fromEpochMs, toEpochMs);
+  }
+
+  async listCosEvents(fromEpochMs: number, toEpochMs: number): Promise<CalendarEvent[]> {
+    const accessToken = await this.bearer();
+    if (!accessToken) return [];
+    const calendarId = await this.ensureCosCalendarId(accessToken);
+    return this.fetchEvents(accessToken, calendarId, fromEpochMs, toEpochMs);
   }
 
   /** Resolve or create the dedicated CoS write calendar. */
@@ -133,10 +154,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
   ): Promise<string> {
     const accessToken = await this.bearer();
     if (!accessToken) {
-      console.error(
-        'google.upsertCosEvent: no real OAuth token (fake connect or not connected) — not writing to Google',
-      );
-      return this.fallback.upsertCosEvent!(event);
+      throw new Error('Google Calendar is not connected');
     }
 
     try {
@@ -151,10 +169,12 @@ export class GoogleCalendarProvider implements CalendarProvider {
           : undefined,
       };
       const existingId = event.eventId?.startsWith('cos-') ? undefined : event.eventId;
+      const createUrl =
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`;
       const url = existingId
         ? `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(existingId)}`
-        : `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`;
-      const res = await fetch(url, {
+        : createUrl;
+      let res = await fetch(url, {
         method: existingId ? 'PATCH' : 'POST',
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -162,6 +182,19 @@ export class GoogleCalendarProvider implements CalendarProvider {
         },
         body: JSON.stringify(body),
       });
+      // A user may delete an app-owned event directly in Google. If they then
+      // move the still-local block before pulling, recreate it instead of
+      // leaving the block permanently FAILED.
+      if (existingId && (res.status === 404 || res.status === 410)) {
+        res = await fetch(createUrl, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+      }
       if (!res.ok) {
         const detail = await res.text();
         console.error('google.upsertCosEvent failed', res.status, detail);

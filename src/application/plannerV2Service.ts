@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull, lt, gt } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
 import type { Db } from '../infrastructure/db/client.js';
 import {
   calendarCommitments,
@@ -247,6 +247,26 @@ export class PlannerV2Service {
       })
       .where(eq(timeBlocks.id, id));
     return { id, deleted: true };
+  }
+
+  async retryCalendarSync(): Promise<{ attempted: number; synced: number; failed: number }> {
+    const rows = await this.db
+      .select({ id: timeBlocks.id })
+      .from(timeBlocks)
+      .where(
+        and(
+          isNull(timeBlocks.deletedAt),
+          inArray(timeBlocks.syncStatus, ['PENDING', 'FAILED']),
+        ),
+      );
+    let synced = 0;
+    let failed = 0;
+    for (const row of rows) {
+      const result = await this.syncBlock(row.id);
+      if (result.syncStatus === 'SYNCED') synced += 1;
+      else failed += 1;
+    }
+    return { attempted: rows.length, synced, failed };
   }
 
   private async syncBlock(id: string) {

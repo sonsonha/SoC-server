@@ -275,7 +275,8 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   });
 
   jobQueue.register('calendar.pull', async () => {
-    await calendarPull.pull();
+    const summary = await calendarPull.pull();
+    if (summary.connected) await plannerV2Service.retryCalendarSync();
   });
 
   await healthRoutes(app);
@@ -306,6 +307,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     tokenService,
     calendarPull,
     calendarProvider,
+    plannerV2: plannerV2Service,
     db: deps.db,
   });
   await plannerV2Routes(app, {

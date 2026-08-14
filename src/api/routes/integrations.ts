@@ -11,6 +11,7 @@ import type { FakeCalendarProvider } from '../../infrastructure/providers/calend
 import { calendarSyncState } from '../../infrastructure/db/schema/index.js';
 import type { Db } from '../../infrastructure/db/client.js';
 import type { CalendarProvider } from '../../infrastructure/providers/calendar/types.js';
+import type { PlannerV2Service } from '../../application/plannerV2Service.js';
 
 const connectBody = z.object({
   mode: z.enum(['fake', 'token']).default('fake'),
@@ -124,6 +125,7 @@ export async function integrationRoutes(
     tokenService: IntegrationTokenService;
     calendarPull: CalendarPullService;
     calendarProvider: CalendarProvider;
+    plannerV2: PlannerV2Service;
     db: Db;
   },
 ): Promise<void> {
@@ -361,7 +363,10 @@ export async function integrationRoutes(
 
   const syncCalendar = async (_request: FastifyRequest, reply: FastifyReply) => {
     const summary = await deps.calendarPull.pull();
-    return reply.send({ ok: true, summary });
+    const retry = summary.connected
+      ? await deps.plannerV2.retryCalendarSync()
+      : { attempted: 0, synced: 0, failed: 0 };
+    return reply.send({ ok: true, summary: { ...summary, retry } });
   };
 
   app.post('/v1/calendar/sync', { preHandler: auth }, syncCalendar);

@@ -18,6 +18,12 @@ export class FakeCalendarProvider implements CalendarProvider {
     return this.external.filter((e) => e.startEpochMs < toEpochMs && e.endEpochMs > fromEpochMs);
   }
 
+  async listCosEvents(fromEpochMs: number, toEpochMs: number): Promise<CalendarEvent[]> {
+    return [...this.cos.values()].filter(
+      (e) => e.startEpochMs < toEpochMs && e.endEpochMs > fromEpochMs,
+    );
+  }
+
   async upsertCosEvent(
     event: Omit<CalendarEvent, 'eventId'> & { eventId?: string },
   ): Promise<string> {
