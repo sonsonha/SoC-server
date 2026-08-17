@@ -172,7 +172,44 @@ export class PlannerV2Service {
         updatedAt: new Date(),
       })
       .where(eq(tasks.id, id));
-    return { id, status: taskStatusFromDb(status), revision: row.revision + 1 };
+    const updated = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+    return this.serializeTask(updated[0]!);
+  }
+
+  async getTaskTimeBlocks(taskId: string) {
+    const task = await this.db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+    if (!task[0] || task[0].deletedAt) this.notFound('Task');
+    const rows = await this.db
+      .select()
+      .from(timeBlocks)
+      .where(and(eq(timeBlocks.taskId, taskId), isNull(timeBlocks.deletedAt)))
+      .orderBy(asc(timeBlocks.startEpochMs));
+    return rows.map((row) => this.serializeBlock(row));
+  }
+
+  async deleteTask(id: string) {
+    const current = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+    if (!current[0] || current[0].deletedAt) this.notFound('Task');
+    const row = current[0]!;
+    const linkedBlocks = await this.db
+      .select({ id: timeBlocks.id })
+      .from(timeBlocks)
+      .where(and(eq(timeBlocks.taskId, id), isNull(timeBlocks.deletedAt)));
+
+    for (const block of linkedBlocks) {
+      await this.deleteTimeBlock(block.id);
+    }
+
+    await this.db
+      .update(tasks)
+      .set({
+        status: 'CANCELLED',
+        deletedAt: new Date(),
+        revision: row.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(tasks.id, id));
+    return { id, deleted: true as const, removedTimeBlocks: linkedBlocks.length };
   }
 
   async createTimeBlock(input: CreateTimeBlockInput) {

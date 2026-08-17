@@ -55,6 +55,16 @@ export async function plannerV2Routes(
     return reply.send(await deps.planner.patchTask(params.id, body));
   });
 
+  app.get('/v2/tasks/:id/time-blocks', { preHandler: auth }, async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    return reply.send(await deps.planner.getTaskTimeBlocks(params.id));
+  });
+
+  app.delete('/v2/tasks/:id', { preHandler: auth }, async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    return reply.send(await deps.planner.deleteTask(params.id));
+  });
+
   app.post('/v2/time-blocks', { preHandler: auth }, async (request, reply) => {
     const body = createTimeBlockSchema.parse(request.body ?? {});
     return reply.code(201).send(await deps.planner.createTimeBlock(body));
