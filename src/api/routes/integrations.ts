@@ -22,7 +22,6 @@ const connectBody = z.object({
   code: z.string().nullish(),
 });
 
-const WEB_PLANNER_RETURN_URL = 'https://personal-os-calendar-planner.terryson821.chatgpt.site';
 const OAUTH_STATE_MAX_AGE_MS = 10 * 60_000;
 const GOOGLE_CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 const GOOGLE_CALENDAR_MANAGE_SCOPE = 'https://www.googleapis.com/auth/calendar.calendars';
@@ -202,7 +201,7 @@ export async function integrationRoutes(
         scopes: tokens.scope ?? null,
       });
       if (q.state && verifyWebOAuthState(q.state, deps.config.DEVICE_AUTH_PEPPER)) {
-        return reply.redirect(`${WEB_PLANNER_RETURN_URL}/?google=connected`);
+        return reply.redirect(`${deps.config.PLANNER_WEB_RETURN_URL.replace(/\/$/, '')}/?google=connected`);
       }
       return reply.type('text/html').send(`<!doctype html>
 <html><body style="font-family:system-ui;padding:2rem">
