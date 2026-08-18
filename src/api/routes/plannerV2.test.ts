@@ -62,3 +62,44 @@ describe('Planner V2 task management routes', () => {
     await app.close();
   });
 });
+
+describe('Planner V2 projects and goals routes', () => {
+  it('creates a project through the authenticated planner API', async () => {
+    const createProject = vi.fn().mockResolvedValue({
+      id: 'project-1',
+      title: 'Personal OS',
+      goalId: null,
+      color: '#705CF6',
+      active: true,
+    });
+    const app = await plannerApp({ createProject });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/projects',
+      headers: { ...authorization, 'content-type': 'application/json' },
+      payload: { title: 'Personal OS' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({ id: 'project-1', title: 'Personal OS' });
+    expect(createProject).toHaveBeenCalledWith({ title: 'Personal OS' });
+    await app.close();
+  });
+
+  it('deletes a goal through the authenticated planner API', async () => {
+    const deleteGoal = vi.fn().mockResolvedValue({ id: 'goal-1', deleted: true });
+    const app = await plannerApp({ deleteGoal });
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/v2/goals/goal-1',
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ id: 'goal-1', deleted: true });
+    expect(deleteGoal).toHaveBeenCalledWith('goal-1');
+    await app.close();
+  });
+});

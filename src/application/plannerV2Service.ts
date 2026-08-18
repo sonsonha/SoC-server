@@ -54,6 +54,30 @@ type CreateTimeBlockInput = {
   reminderMinutes?: number | null;
 };
 
+type CreateProjectInput = {
+  title: string;
+  goalId?: string | null;
+  color?: string;
+  lifeArea?: string;
+  description?: string;
+  active?: boolean;
+};
+
+type PatchProjectInput = Partial<CreateProjectInput>;
+
+type CreateGoalInput = {
+  title: string;
+  horizon?: string;
+  lifeArea?: string;
+  parentId?: string | null;
+  targetDate?: string | null;
+  description?: string;
+  successCriteria?: string;
+  status?: string;
+};
+
+type PatchGoalInput = Partial<CreateGoalInput>;
+
 export class PlannerV2Service {
   constructor(
     private readonly db: Db,
@@ -93,21 +117,8 @@ export class PlannerV2Service {
 
     return {
       tasks: taskRows.map((row) => this.serializeTask(row)),
-      projects: projectRows.map((row) => ({
-        id: row.id,
-        title: row.title,
-        goalId: row.goalId,
-        color: row.color,
-        active: row.active,
-      })),
-      goals: goalRows.map((row) => ({
-        id: row.id,
-        title: row.title,
-        horizon: row.horizon,
-        status: row.status,
-        targetDate: row.targetDate,
-        parentId: row.parentId,
-      })),
+      projects: projectRows.map((row) => this.serializeProject(row)),
+      goals: goalRows.map((row) => this.serializeGoal(row)),
       timeBlocks: blockRows.map((row) => this.serializeBlock(row)),
       externalEvents: externalRows.map((row) => ({
         id: row.id,
@@ -283,7 +294,135 @@ export class PlannerV2Service {
         updatedAt: new Date(),
       })
       .where(eq(timeBlocks.id, id));
-    return { id, deleted: true };
+    return { id, deleted: true as const };
+  }
+
+  async createProject(input: CreateProjectInput) {
+    if (input.goalId) await this.requireGoal(input.goalId);
+    const id = randomUUID();
+    const now = new Date();
+    await this.db.insert(projects).values({
+      id,
+      title: input.title,
+      goalId: input.goalId ?? null,
+      color: input.color ?? '#705CF6',
+      lifeArea: input.lifeArea ?? 'LIFE',
+      description: input.description ?? '',
+      active: input.active ?? true,
+      revision: 1,
+      updatedAt: now,
+      deletedAt: null,
+    });
+    const created = await this.db.select().from(projects).where(eq(projects.id, id)).limit(1);
+    return this.serializeProject(created[0]!);
+  }
+
+  async patchProject(id: string, input: PatchProjectInput) {
+    const current = await this.db.select().from(projects).where(eq(projects.id, id)).limit(1);
+    if (!current[0] || current[0].deletedAt) this.notFound('Project');
+    const row = current[0]!;
+    if (input.goalId) await this.requireGoal(input.goalId);
+    await this.db
+      .update(projects)
+      .set({
+        title: input.title ?? row.title,
+        goalId: input.goalId === undefined ? row.goalId : input.goalId,
+        color: input.color ?? row.color,
+        lifeArea: input.lifeArea ?? row.lifeArea,
+        description: input.description ?? row.description,
+        active: input.active ?? row.active,
+        revision: row.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(projects.id, id));
+    const updated = await this.db.select().from(projects).where(eq(projects.id, id)).limit(1);
+    return this.serializeProject(updated[0]!);
+  }
+
+  async deleteProject(id: string) {
+    const current = await this.db.select().from(projects).where(eq(projects.id, id)).limit(1);
+    if (!current[0] || current[0].deletedAt) this.notFound('Project');
+    const row = current[0]!;
+    await this.db
+      .update(tasks)
+      .set({ projectId: null, updatedAt: new Date() })
+      .where(and(eq(tasks.projectId, id), isNull(tasks.deletedAt)));
+    await this.db
+      .update(projects)
+      .set({
+        deletedAt: new Date(),
+        active: false,
+        revision: row.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(projects.id, id));
+    return { id, deleted: true as const };
+  }
+
+  async createGoal(input: CreateGoalInput) {
+    if (input.parentId) await this.requireGoal(input.parentId);
+    const id = randomUUID();
+    const now = new Date();
+    await this.db.insert(goals).values({
+      id,
+      title: input.title,
+      lifeArea: input.lifeArea ?? 'LIFE',
+      description: input.description ?? '',
+      horizon: input.horizon ?? 'SHORT',
+      status: input.status ?? 'ACTIVE',
+      targetDate: input.targetDate ?? null,
+      parentId: input.parentId ?? null,
+      successCriteria: input.successCriteria ?? '',
+      revision: 1,
+      updatedAt: now,
+      deletedAt: null,
+    });
+    const created = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
+    return this.serializeGoal(created[0]!);
+  }
+
+  async patchGoal(id: string, input: PatchGoalInput) {
+    const current = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
+    if (!current[0] || current[0].deletedAt) this.notFound('Goal');
+    const row = current[0]!;
+    if (input.parentId) await this.requireGoal(input.parentId);
+    await this.db
+      .update(goals)
+      .set({
+        title: input.title ?? row.title,
+        lifeArea: input.lifeArea ?? row.lifeArea,
+        description: input.description ?? row.description,
+        horizon: input.horizon ?? row.horizon,
+        status: input.status ?? row.status,
+        targetDate: input.targetDate === undefined ? row.targetDate : input.targetDate,
+        parentId: input.parentId === undefined ? row.parentId : input.parentId,
+        successCriteria: input.successCriteria ?? row.successCriteria,
+        revision: row.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(goals.id, id));
+    const updated = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
+    return this.serializeGoal(updated[0]!);
+  }
+
+  async deleteGoal(id: string) {
+    const current = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
+    if (!current[0] || current[0].deletedAt) this.notFound('Goal');
+    const row = current[0]!;
+    await this.db
+      .update(projects)
+      .set({ goalId: null, updatedAt: new Date() })
+      .where(and(eq(projects.goalId, id), isNull(projects.deletedAt)));
+    await this.db
+      .update(goals)
+      .set({
+        deletedAt: new Date(),
+        status: 'ARCHIVED',
+        revision: row.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(goals.id, id));
+    return { id, deleted: true as const };
   }
 
   async retryCalendarSync(): Promise<{ attempted: number; synced: number; failed: number }> {
@@ -368,6 +507,39 @@ export class PlannerV2Service {
       status: taskStatusFromDb(row.status),
       revision: row.revision,
     };
+  }
+
+  private serializeProject(row: typeof projects.$inferSelect) {
+    return {
+      id: row.id,
+      title: row.title,
+      goalId: row.goalId,
+      color: row.color,
+      lifeArea: row.lifeArea,
+      description: row.description,
+      active: row.active,
+      revision: row.revision,
+    };
+  }
+
+  private serializeGoal(row: typeof goals.$inferSelect) {
+    return {
+      id: row.id,
+      title: row.title,
+      horizon: row.horizon,
+      lifeArea: row.lifeArea,
+      status: row.status,
+      targetDate: row.targetDate,
+      parentId: row.parentId,
+      description: row.description,
+      successCriteria: row.successCriteria,
+      revision: row.revision,
+    };
+  }
+
+  private async requireGoal(id: string) {
+    const rows = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
+    if (!rows[0] || rows[0].deletedAt) this.notFound('Goal');
   }
 
   private validateWindow(start: number, end: number) {

@@ -26,6 +26,26 @@ const createTimeBlockSchema = z.object({
   reminderMinutes: z.number().int().min(0).max(30 * 24 * 60).nullable().optional(),
 });
 
+const createProjectSchema = z.object({
+  title: z.string().trim().min(1).max(240),
+  goalId: z.string().min(1).nullable().optional(),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  lifeArea: z.string().trim().min(1).max(64).optional(),
+  description: z.string().max(10_000).optional(),
+  active: z.boolean().optional(),
+});
+
+const createGoalSchema = z.object({
+  title: z.string().trim().min(1).max(240),
+  horizon: z.enum(['MISSION', 'YEAR', 'QUARTER', 'MONTH', 'WEEK', 'SHORT', 'LONG']).optional(),
+  lifeArea: z.string().trim().min(1).max(64).optional(),
+  parentId: z.string().min(1).nullable().optional(),
+  targetDate: z.string().max(32).nullable().optional(),
+  description: z.string().max(10_000).optional(),
+  successCriteria: z.string().max(10_000).optional(),
+  status: z.enum(['ACTIVE', 'PAUSED', 'COMPLETED', 'ARCHIVED']).optional(),
+});
+
 export async function plannerV2Routes(
   app: FastifyInstance,
   deps: { deviceService: DeviceService; planner: PlannerV2Service; webToken?: string },
@@ -79,5 +99,37 @@ export async function plannerV2Routes(
   app.delete('/v2/time-blocks/:id', { preHandler: auth }, async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     return reply.send(await deps.planner.deleteTimeBlock(params.id));
+  });
+
+  app.post('/v2/projects', { preHandler: auth }, async (request, reply) => {
+    const body = createProjectSchema.parse(request.body ?? {});
+    return reply.code(201).send(await deps.planner.createProject(body));
+  });
+
+  app.patch('/v2/projects/:id', { preHandler: auth }, async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = createProjectSchema.partial().parse(request.body ?? {});
+    return reply.send(await deps.planner.patchProject(params.id, body));
+  });
+
+  app.delete('/v2/projects/:id', { preHandler: auth }, async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    return reply.send(await deps.planner.deleteProject(params.id));
+  });
+
+  app.post('/v2/goals', { preHandler: auth }, async (request, reply) => {
+    const body = createGoalSchema.parse(request.body ?? {});
+    return reply.code(201).send(await deps.planner.createGoal(body));
+  });
+
+  app.patch('/v2/goals/:id', { preHandler: auth }, async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = createGoalSchema.partial().parse(request.body ?? {});
+    return reply.send(await deps.planner.patchGoal(params.id, body));
+  });
+
+  app.delete('/v2/goals/:id', { preHandler: auth }, async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    return reply.send(await deps.planner.deleteGoal(params.id));
   });
 }
