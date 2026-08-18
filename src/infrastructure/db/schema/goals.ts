@@ -25,5 +25,12 @@ export const goals = pgTable('goals', {
   currentMilestoneId: text('current_milestone_id'),
   milestonesJson: text('milestones_json').notNull().default('[]'),
   systemsJson: text('systems_json').notNull().default('[]'),
+  outcomeStatus: text('outcome_status').notNull().default('ACTIVE'),
+  achievedAt: text('achieved_at'),
+  closedAt: text('closed_at'),
+  processesJson: text('processes_json').notNull().default('[]'),
+  metricObservationsJson: text('metric_observations_json').notNull().default('[]'),
+  reflectionJson: text('reflection_json').notNull().default('{}'),
+  reviewSnapshotJson: text('review_snapshot_json').notNull().default('{}'),
   ...syncColumns,
 });

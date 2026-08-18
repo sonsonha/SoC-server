@@ -11,6 +11,8 @@ const createTaskSchema = z.object({
   title: z.string().trim().min(1).max(240),
   notes: z.string().max(10_000).optional(),
   projectId: z.string().min(1).nullable().optional(),
+  goalId: z.string().min(1).nullable().optional(),
+  goalProcessId: z.string().min(1).nullable().optional(),
   dueAt: isoDateTime.nullable().optional(),
   dueHorizon: z.enum(['DAY', 'WEEK', 'MONTH']).nullable().optional(),
   durationMinutes: z.number().int().min(5).max(24 * 60).optional(),
@@ -30,6 +32,7 @@ const createTimeBlockSchema = z.object({
 const createProjectSchema = z.object({
   title: z.string().trim().min(1).max(240),
   goalId: z.string().min(1).nullable().optional(),
+  defaultGoalProcessId: z.string().min(1).nullable().optional(),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   lifeArea: z.string().trim().min(1).max(64).optional(),
   description: z.string().max(10_000).optional(),
@@ -49,6 +52,53 @@ const systemSchema = z.object({
   cadence: z.string().max(120).optional(),
 });
 
+const processSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().trim().min(1).max(240),
+  measurementType: z.enum(['COUNT', 'DURATION', 'BINARY', 'CUSTOM_METRIC']),
+  targetValue: z.number().nonnegative(),
+  unit: z.string().max(32).optional(),
+  period: z.enum(['DAY', 'WEEK', 'MONTH']),
+  active: z.boolean(),
+});
+
+const metricObservationSchema = z.object({
+  id: z.string().min(1),
+  observedAt: isoDateTime,
+  value: z.number(),
+  note: z.string().max(2_000).optional(),
+  label: z.string().max(120).optional(),
+});
+
+const reflectionSchema = z.object({
+  seriousAttempt: z.enum(['NOT_REALLY', 'PARTLY', 'YES']).nullable().optional(),
+  worked: z.string().max(10_000).optional(),
+  didntWork: z.string().max(10_000).optional(),
+  outsideControl: z.string().max(10_000).optional(),
+  learned: z.string().max(10_000).optional(),
+  differently: z.string().max(10_000).optional(),
+  nextAction: z.enum(['ARCHIVE', 'EXTEND', 'REVISE', 'FOLLOW_UP', 'MAINTAIN', 'STOP']).nullable().optional(),
+  reviewedAt: isoDateTime.nullable().optional(),
+});
+
+const reviewSnapshotSchema = z.object({
+  generatedAt: isoDateTime,
+  outcomeStatus: z.enum(['ACTIVE', 'ACHIEVED_ON_TIME', 'ACHIEVED_LATE', 'PARTIALLY_ACHIEVED', 'NOT_ACHIEVED', 'STOPPED_INTENTIONALLY', 'NO_LONGER_RELEVANT']),
+  targetDate: z.string().max(32).nullable(),
+  achievedAt: z.string().max(64).nullable(),
+  processSummary: z.array(z.object({
+    processId: z.string().min(1),
+    name: z.string().trim().min(1).max(240),
+    completed: z.number(),
+    planned: z.number(),
+    target: z.number(),
+    unit: z.string().max(32).optional(),
+  })),
+  consistency: z.object({ metWeeks: z.number(), totalWeeks: z.number(), threshold: z.number() }),
+  milestones: z.array(z.object({ id: z.string().min(1), title: z.string().trim().min(1).max(240), status: z.string().min(1) })),
+  latestObservation: metricObservationSchema.nullish(),
+});
+
 const createGoalSchema = z.object({
   title: z.string().trim().min(1).max(240),
   horizon: z.enum(['MISSION', 'YEAR', 'QUARTER', 'MONTH', 'WEEK', 'SHORT', 'LONG']).optional(),
@@ -62,9 +112,16 @@ const createGoalSchema = z.object({
   why: z.string().max(10_000).optional(),
   metric: z.string().max(10_000).optional(),
   focusType: z.enum(['FOCUS', 'MAINTAIN', 'EXPLORE']).optional(),
+  outcomeStatus: z.enum(['ACTIVE', 'ACHIEVED_ON_TIME', 'ACHIEVED_LATE', 'PARTIALLY_ACHIEVED', 'NOT_ACHIEVED', 'STOPPED_INTENTIONALLY', 'NO_LONGER_RELEVANT']).optional(),
+  achievedAt: z.string().max(64).nullable().optional(),
+  closedAt: z.string().max(64).nullable().optional(),
   currentMilestoneId: z.string().min(1).nullable().optional(),
   milestones: z.array(milestoneSchema).optional(),
   systems: z.array(systemSchema).optional(),
+  processes: z.array(processSchema).optional(),
+  metricObservations: z.array(metricObservationSchema).optional(),
+  reflection: reflectionSchema.nullable().optional(),
+  reviewSnapshot: reviewSnapshotSchema.nullable().optional(),
 });
 
 export async function plannerV2Routes(
@@ -152,5 +209,11 @@ export async function plannerV2Routes(
   app.delete('/v2/goals/:id', { preHandler: auth }, async (request, reply) => {
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     return reply.send(await deps.planner.deleteGoal(params.id));
+  });
+
+  app.get('/v2/goals/:id/progress', { preHandler: auth }, async (request, reply) => {
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const query = z.object({ now: isoDateTime.optional() }).parse(request.query);
+    return reply.send(await deps.planner.getGoalProgress(params.id, query.now));
   });
 }

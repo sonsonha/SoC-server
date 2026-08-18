@@ -9,6 +9,14 @@ import {
   timeBlocks,
 } from '../infrastructure/db/schema/index.js';
 import type { CalendarProvider } from '../infrastructure/providers/calendar/types.js';
+import {
+  buildGoalProgress,
+  type GoalMetricObservation,
+  type GoalOutcomeStatus,
+  type GoalProcess,
+  type GoalReflection,
+  type GoalReviewSnapshot,
+} from './goalProgress.js';
 
 export type PlannerTaskStatus = 'INBOX' | 'SCHEDULED' | 'DONE';
 export type PlannerPriority = 'P1' | 'P2' | 'P3' | 'P4';
@@ -50,24 +58,43 @@ export type GoalSystem = {
   cadence?: string;
 };
 
-export function parseGoalMilestones(raw: string | null | undefined): GoalMilestone[] {
-  if (!raw) return [];
+function parseJsonValue<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) return fallback;
   try {
-    const parsed = JSON.parse(raw) as GoalMilestone[];
-    return Array.isArray(parsed) ? parsed : [];
+    return JSON.parse(raw) as T;
   } catch {
-    return [];
+    return fallback;
   }
 }
 
+export function parseGoalMilestones(raw: string | null | undefined): GoalMilestone[] {
+  const parsed = parseJsonValue<GoalMilestone[] | null>(raw, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
 export function parseGoalSystems(raw: string | null | undefined): GoalSystem[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as GoalSystem[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const parsed = parseJsonValue<GoalSystem[] | null>(raw, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+export function parseGoalProcesses(raw: string | null | undefined): GoalProcess[] {
+  const parsed = parseJsonValue<GoalProcess[] | null>(raw, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+export function parseGoalMetricObservations(raw: string | null | undefined): GoalMetricObservation[] {
+  const parsed = parseJsonValue<GoalMetricObservation[] | null>(raw, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+export function parseGoalReflection(raw: string | null | undefined): GoalReflection | null {
+  const parsed = parseJsonValue<GoalReflection | null>(raw, null);
+  return parsed && typeof parsed === 'object' ? parsed : null;
+}
+
+export function parseGoalReviewSnapshot(raw: string | null | undefined): GoalReviewSnapshot | null {
+  const parsed = parseJsonValue<GoalReviewSnapshot | null>(raw, null);
+  return parsed && typeof parsed === 'object' ? parsed : null;
 }
 
 export function taskStatusFromDb(status: string): PlannerTaskStatus {
@@ -82,6 +109,8 @@ type CreateTaskInput = {
   title: string;
   notes?: string;
   projectId?: string | null;
+  goalId?: string | null;
+  goalProcessId?: string | null;
   dueAt?: string | null;
   dueHorizon?: 'DAY' | 'WEEK' | 'MONTH' | null;
   durationMinutes?: number;
@@ -103,6 +132,7 @@ type CreateTimeBlockInput = {
 type CreateProjectInput = {
   title: string;
   goalId?: string | null;
+  defaultGoalProcessId?: string | null;
   color?: string;
   lifeArea?: string;
   description?: string;
@@ -125,9 +155,16 @@ type CreateGoalInput = {
   why?: string;
   metric?: string;
   focusType?: 'FOCUS' | 'MAINTAIN' | 'EXPLORE';
+  outcomeStatus?: GoalOutcomeStatus;
+  achievedAt?: string | null;
+  closedAt?: string | null;
   currentMilestoneId?: string | null;
   milestones?: GoalMilestone[];
   systems?: GoalSystem[];
+  processes?: GoalProcess[];
+  metricObservations?: GoalMetricObservation[];
+  reflection?: GoalReflection | null;
+  reviewSnapshot?: GoalReviewSnapshot | null;
 };
 
 type PatchGoalInput = Partial<CreateGoalInput>;
@@ -188,6 +225,7 @@ export class PlannerV2Service {
   }
 
   async createTask(input: CreateTaskInput) {
+    if (input.goalId) await this.requireGoal(input.goalId);
     const id = randomUUID();
     const now = new Date();
     await this.db.insert(tasks).values({
@@ -195,6 +233,8 @@ export class PlannerV2Service {
       title: input.title,
       description: input.notes ?? '',
       projectId: input.projectId ?? null,
+      goalId: input.goalId ?? null,
+      goalProcessId: input.goalProcessId ?? null,
       lifeArea: 'LIFE',
       priority: priorityToDb(input.priority ?? 'NORMAL'),
       deadlineEpochMs: input.dueAt ? new Date(input.dueAt).getTime() : null,
@@ -213,6 +253,7 @@ export class PlannerV2Service {
     const current = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
     if (!current[0] || current[0].deletedAt) this.notFound('Task');
     const row = current[0]!;
+    if (input.goalId) await this.requireGoal(input.goalId);
     const status = input.status === undefined
       ? row.status
       : input.status === 'DONE'
@@ -220,12 +261,19 @@ export class PlannerV2Service {
         : input.status === 'SCHEDULED'
           ? 'SCHEDULED'
           : 'TODO';
+    const completedAtEpochMs = input.status === undefined
+      ? row.completedAtEpochMs
+      : input.status === 'DONE'
+        ? row.completedAtEpochMs ?? Date.now()
+        : null;
     await this.db
       .update(tasks)
       .set({
         title: input.title ?? row.title,
         description: input.notes ?? row.description,
         projectId: input.projectId === undefined ? row.projectId : input.projectId,
+        goalId: input.goalId === undefined ? row.goalId : input.goalId,
+        goalProcessId: input.goalProcessId === undefined ? row.goalProcessId : input.goalProcessId,
         deadlineEpochMs: input.dueAt === undefined
           ? row.deadlineEpochMs
           : input.dueAt
@@ -235,6 +283,7 @@ export class PlannerV2Service {
         estimatedMinutes: input.durationMinutes ?? row.estimatedMinutes,
         priority: input.priority ? priorityToDb(input.priority) : row.priority,
         status,
+        completedAtEpochMs,
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
@@ -361,6 +410,7 @@ export class PlannerV2Service {
       id,
       title: input.title,
       goalId: input.goalId ?? null,
+      defaultGoalProcessId: input.defaultGoalProcessId ?? null,
       color: input.color ?? '#705CF6',
       lifeArea: input.lifeArea ?? 'LIFE',
       description: input.description ?? '',
@@ -384,6 +434,9 @@ export class PlannerV2Service {
       .set({
         title: input.title ?? row.title,
         goalId: input.goalId === undefined ? row.goalId : input.goalId,
+        defaultGoalProcessId: input.defaultGoalProcessId === undefined
+          ? row.defaultGoalProcessId
+          : input.defaultGoalProcessId,
         color: input.color ?? row.color,
         lifeArea: input.lifeArea ?? row.lifeArea,
         description: input.description ?? row.description,
@@ -435,9 +488,16 @@ export class PlannerV2Service {
       why: input.why ?? '',
       metric: input.metric ?? input.successCriteria ?? '',
       focusType: input.focusType ?? 'FOCUS',
+      outcomeStatus: input.outcomeStatus ?? 'ACTIVE',
+      achievedAt: input.achievedAt ?? null,
+      closedAt: input.closedAt ?? null,
       currentMilestoneId: input.currentMilestoneId ?? null,
       milestonesJson: JSON.stringify(input.milestones ?? []),
       systemsJson: JSON.stringify(input.systems ?? []),
+      processesJson: JSON.stringify(input.processes ?? []),
+      metricObservationsJson: JSON.stringify(input.metricObservations ?? []),
+      reflectionJson: JSON.stringify(input.reflection ?? {}),
+      reviewSnapshotJson: JSON.stringify(input.reviewSnapshot ?? {}),
       revision: 1,
       updatedAt: now,
       deletedAt: null,
@@ -466,6 +526,9 @@ export class PlannerV2Service {
         why: input.why ?? row.why,
         metric: input.metric ?? row.metric,
         focusType: input.focusType ?? row.focusType,
+        outcomeStatus: input.outcomeStatus ?? row.outcomeStatus,
+        achievedAt: input.achievedAt === undefined ? row.achievedAt : input.achievedAt,
+        closedAt: input.closedAt === undefined ? row.closedAt : input.closedAt,
         currentMilestoneId: input.currentMilestoneId === undefined
           ? row.currentMilestoneId
           : input.currentMilestoneId,
@@ -475,6 +538,18 @@ export class PlannerV2Service {
         systemsJson: input.systems === undefined
           ? row.systemsJson
           : JSON.stringify(input.systems),
+        processesJson: input.processes === undefined
+          ? row.processesJson
+          : JSON.stringify(input.processes),
+        metricObservationsJson: input.metricObservations === undefined
+          ? row.metricObservationsJson
+          : JSON.stringify(input.metricObservations),
+        reflectionJson: input.reflection === undefined
+          ? row.reflectionJson
+          : JSON.stringify(input.reflection ?? {}),
+        reviewSnapshotJson: input.reviewSnapshot === undefined
+          ? row.reviewSnapshotJson
+          : JSON.stringify(input.reviewSnapshot ?? {}),
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
@@ -501,6 +576,56 @@ export class PlannerV2Service {
       })
       .where(eq(goals.id, id));
     return { id, deleted: true as const };
+  }
+
+  async getGoalProgress(id: string, nowIso?: string) {
+    const goalRows = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
+    const goal = goalRows[0];
+    if (!goal || goal.deletedAt) this.notFound('Goal');
+
+    const linkedProjects = await this.db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.goalId, id), isNull(projects.deletedAt)));
+    const linkedProjectIds = new Set(linkedProjects.map((project) => project.id));
+    const taskRows = (await this.db.select().from(tasks).where(isNull(tasks.deletedAt)))
+      .filter((task) => task.goalId === id || (task.projectId ? linkedProjectIds.has(task.projectId) : false));
+    const taskIds = taskRows.map((task) => task.id);
+    const blockRows = taskIds.length === 0
+      ? []
+      : await this.db
+        .select()
+        .from(timeBlocks)
+        .where(and(inArray(timeBlocks.taskId, taskIds), isNull(timeBlocks.deletedAt)))
+        .orderBy(asc(timeBlocks.startEpochMs));
+
+    const progress = buildGoalProgress(
+      parseGoalProcesses(goal.processesJson),
+      parseGoalMetricObservations(goal.metricObservationsJson),
+      taskRows.map((task) => ({
+        id: task.id,
+        title: task.title,
+        goalId: task.goalId,
+        goalProcessId: task.goalProcessId,
+        projectId: task.projectId,
+        status: taskStatusFromDb(task.status),
+        dueAt: task.deadlineEpochMs ? new Date(task.deadlineEpochMs).toISOString() : null,
+        completedAt: task.completedAtEpochMs ? new Date(task.completedAtEpochMs).toISOString() : null,
+      })),
+      blockRows.map((block) => ({
+        id: block.id,
+        taskId: block.taskId,
+        startAt: new Date(block.startEpochMs).toISOString(),
+        endAt: new Date(block.endEpochMs).toISOString(),
+        durationMinutes: Math.round((block.endEpochMs - block.startEpochMs) / 60_000),
+      })),
+      nowIso ? new Date(nowIso) : new Date(),
+    );
+
+    return {
+      goal: this.serializeGoal(goal),
+      progress,
+    };
   }
 
   async retryCalendarSync(): Promise<{ attempted: number; synced: number; failed: number }> {
@@ -579,11 +704,14 @@ export class PlannerV2Service {
       title: row.title,
       notes: row.description,
       projectId: row.projectId,
+      goalId: row.goalId,
+      goalProcessId: row.goalProcessId,
       dueAt: row.deadlineEpochMs ? new Date(row.deadlineEpochMs).toISOString() : null,
       dueHorizon: dueHorizonFromDb(row.preferredTime),
       durationMinutes: row.estimatedMinutes,
       priority: priorityFromDb(row.priority),
       status: taskStatusFromDb(row.status),
+      completedAt: row.completedAtEpochMs ? new Date(row.completedAtEpochMs).toISOString() : null,
       revision: row.revision,
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -594,6 +722,7 @@ export class PlannerV2Service {
       id: row.id,
       title: row.title,
       goalId: row.goalId,
+      defaultGoalProcessId: row.defaultGoalProcessId,
       color: row.color,
       lifeArea: row.lifeArea,
       description: row.description,
@@ -618,9 +747,16 @@ export class PlannerV2Service {
       why: row.why,
       metric: row.metric || row.successCriteria,
       focusType: row.focusType,
+      outcomeStatus: row.outcomeStatus,
+      achievedAt: row.achievedAt,
+      closedAt: row.closedAt,
       currentMilestoneId: row.currentMilestoneId,
       milestones: parseGoalMilestones(row.milestonesJson),
       systems: parseGoalSystems(row.systemsJson),
+      processes: parseGoalProcesses(row.processesJson),
+      metricObservations: parseGoalMetricObservations(row.metricObservationsJson),
+      reflection: parseGoalReflection(row.reflectionJson),
+      reviewSnapshot: parseGoalReviewSnapshot(row.reviewSnapshotJson),
       revision: row.revision,
     };
   }
