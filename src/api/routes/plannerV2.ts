@@ -5,13 +5,14 @@ import type { DeviceService } from '../../application/deviceService.js';
 import { createPlannerAuthHook } from '../middleware/plannerAuth.js';
 
 const isoDateTime = z.string().datetime({ offset: true });
-const priority = z.enum(['LOW', 'NORMAL', 'HIGH']);
+const priority = z.enum(['LOW', 'NORMAL', 'HIGH', 'DROP', 'P1', 'P2', 'P3', 'P4']);
 
 const createTaskSchema = z.object({
   title: z.string().trim().min(1).max(240),
   notes: z.string().max(10_000).optional(),
   projectId: z.string().min(1).nullable().optional(),
   dueAt: isoDateTime.nullable().optional(),
+  dueHorizon: z.enum(['DAY', 'WEEK', 'MONTH']).nullable().optional(),
   durationMinutes: z.number().int().min(5).max(24 * 60).optional(),
   priority: priority.optional(),
 });
@@ -33,6 +34,19 @@ const createProjectSchema = z.object({
   lifeArea: z.string().trim().min(1).max(64).optional(),
   description: z.string().max(10_000).optional(),
   active: z.boolean().optional(),
+  targetDate: z.string().max(32).nullable().optional(),
+});
+
+const milestoneSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().trim().min(1).max(240),
+  status: z.enum(['pending', 'current', 'done']),
+});
+
+const systemSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().trim().min(1).max(240),
+  cadence: z.string().max(120).optional(),
 });
 
 const createGoalSchema = z.object({
@@ -44,6 +58,13 @@ const createGoalSchema = z.object({
   description: z.string().max(10_000).optional(),
   successCriteria: z.string().max(10_000).optional(),
   status: z.enum(['ACTIVE', 'PAUSED', 'COMPLETED', 'ARCHIVED']).optional(),
+  outcome: z.string().max(10_000).optional(),
+  why: z.string().max(10_000).optional(),
+  metric: z.string().max(10_000).optional(),
+  focusType: z.enum(['FOCUS', 'MAINTAIN', 'EXPLORE']).optional(),
+  currentMilestoneId: z.string().min(1).nullable().optional(),
+  milestones: z.array(milestoneSchema).optional(),
+  systems: z.array(systemSchema).optional(),
 });
 
 export async function plannerV2Routes(

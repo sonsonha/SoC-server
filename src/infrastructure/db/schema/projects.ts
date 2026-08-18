@@ -8,6 +8,7 @@ export const projects = pgTable('projects', {
   color: text('color').notNull().default('#705CF6'),
   lifeArea: text('life_area').notNull(),
   description: text('description').notNull().default(''),
+  targetDate: text('target_date'),
   active: boolean('active').notNull().default(true),
   ...syncColumns,
 });

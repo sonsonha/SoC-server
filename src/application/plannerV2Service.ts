@@ -11,18 +11,63 @@ import {
 import type { CalendarProvider } from '../infrastructure/providers/calendar/types.js';
 
 export type PlannerTaskStatus = 'INBOX' | 'SCHEDULED' | 'DONE';
-export type PlannerPriority = 'LOW' | 'NORMAL' | 'HIGH';
+export type PlannerPriority = 'P1' | 'P2' | 'P3' | 'P4';
+export type PlannerPriorityInput =
+  | PlannerPriority
+  | 'HIGH'
+  | 'NORMAL'
+  | 'LOW'
+  | 'DROP';
 
-export function priorityToDb(priority: PlannerPriority): number {
-  if (priority === 'HIGH') return 1;
-  if (priority === 'LOW') return 3;
+export function priorityToDb(priority: PlannerPriorityInput): number {
+  if (priority === 'HIGH' || priority === 'P1') return 1;
+  if (priority === 'LOW' || priority === 'P3') return 3;
+  if (priority === 'DROP' || priority === 'P4') return 4;
   return 2;
 }
 
 export function priorityFromDb(priority: number): PlannerPriority {
-  if (priority <= 1) return 'HIGH';
-  if (priority >= 3) return 'LOW';
-  return 'NORMAL';
+  if (priority <= 1) return 'P1';
+  if (priority === 3) return 'P3';
+  if (priority >= 4) return 'P4';
+  return 'P2';
+}
+
+export function dueHorizonFromDb(value: string | null): 'DAY' | 'WEEK' | 'MONTH' | null {
+  if (value === 'DAY' || value === 'WEEK' || value === 'MONTH') return value;
+  return null;
+}
+
+export type GoalMilestone = {
+  id: string;
+  title: string;
+  status: 'pending' | 'current' | 'done';
+};
+
+export type GoalSystem = {
+  id: string;
+  title: string;
+  cadence?: string;
+};
+
+export function parseGoalMilestones(raw: string | null | undefined): GoalMilestone[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as GoalMilestone[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function parseGoalSystems(raw: string | null | undefined): GoalSystem[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as GoalSystem[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 export function taskStatusFromDb(status: string): PlannerTaskStatus {
@@ -38,8 +83,9 @@ type CreateTaskInput = {
   notes?: string;
   projectId?: string | null;
   dueAt?: string | null;
+  dueHorizon?: 'DAY' | 'WEEK' | 'MONTH' | null;
   durationMinutes?: number;
-  priority?: PlannerPriority;
+  priority?: PlannerPriorityInput;
 };
 
 type PatchTaskInput = Partial<CreateTaskInput> & { status?: PlannerTaskStatus };
@@ -61,6 +107,7 @@ type CreateProjectInput = {
   lifeArea?: string;
   description?: string;
   active?: boolean;
+  targetDate?: string | null;
 };
 
 type PatchProjectInput = Partial<CreateProjectInput>;
@@ -74,6 +121,13 @@ type CreateGoalInput = {
   description?: string;
   successCriteria?: string;
   status?: string;
+  outcome?: string;
+  why?: string;
+  metric?: string;
+  focusType?: 'FOCUS' | 'MAINTAIN' | 'EXPLORE';
+  currentMilestoneId?: string | null;
+  milestones?: GoalMilestone[];
+  systems?: GoalSystem[];
 };
 
 type PatchGoalInput = Partial<CreateGoalInput>;
@@ -144,6 +198,7 @@ export class PlannerV2Service {
       lifeArea: 'LIFE',
       priority: priorityToDb(input.priority ?? 'NORMAL'),
       deadlineEpochMs: input.dueAt ? new Date(input.dueAt).getTime() : null,
+      preferredTime: input.dueHorizon ?? null,
       estimatedMinutes: input.durationMinutes ?? 30,
       status: 'TODO',
       revision: 1,
@@ -176,6 +231,7 @@ export class PlannerV2Service {
           : input.dueAt
             ? new Date(input.dueAt).getTime()
             : null,
+        preferredTime: input.dueHorizon === undefined ? row.preferredTime : input.dueHorizon,
         estimatedMinutes: input.durationMinutes ?? row.estimatedMinutes,
         priority: input.priority ? priorityToDb(input.priority) : row.priority,
         status,
@@ -308,6 +364,7 @@ export class PlannerV2Service {
       color: input.color ?? '#705CF6',
       lifeArea: input.lifeArea ?? 'LIFE',
       description: input.description ?? '',
+      targetDate: input.targetDate ?? null,
       active: input.active ?? true,
       revision: 1,
       updatedAt: now,
@@ -330,6 +387,7 @@ export class PlannerV2Service {
         color: input.color ?? row.color,
         lifeArea: input.lifeArea ?? row.lifeArea,
         description: input.description ?? row.description,
+        targetDate: input.targetDate === undefined ? row.targetDate : input.targetDate,
         active: input.active ?? row.active,
         revision: row.revision + 1,
         updatedAt: new Date(),
@@ -373,6 +431,13 @@ export class PlannerV2Service {
       targetDate: input.targetDate ?? null,
       parentId: input.parentId ?? null,
       successCriteria: input.successCriteria ?? '',
+      outcome: input.outcome ?? input.title,
+      why: input.why ?? '',
+      metric: input.metric ?? input.successCriteria ?? '',
+      focusType: input.focusType ?? 'FOCUS',
+      currentMilestoneId: input.currentMilestoneId ?? null,
+      milestonesJson: JSON.stringify(input.milestones ?? []),
+      systemsJson: JSON.stringify(input.systems ?? []),
       revision: 1,
       updatedAt: now,
       deletedAt: null,
@@ -397,6 +462,19 @@ export class PlannerV2Service {
         targetDate: input.targetDate === undefined ? row.targetDate : input.targetDate,
         parentId: input.parentId === undefined ? row.parentId : input.parentId,
         successCriteria: input.successCriteria ?? row.successCriteria,
+        outcome: input.outcome ?? row.outcome,
+        why: input.why ?? row.why,
+        metric: input.metric ?? row.metric,
+        focusType: input.focusType ?? row.focusType,
+        currentMilestoneId: input.currentMilestoneId === undefined
+          ? row.currentMilestoneId
+          : input.currentMilestoneId,
+        milestonesJson: input.milestones === undefined
+          ? row.milestonesJson
+          : JSON.stringify(input.milestones),
+        systemsJson: input.systems === undefined
+          ? row.systemsJson
+          : JSON.stringify(input.systems),
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
@@ -502,10 +580,12 @@ export class PlannerV2Service {
       notes: row.description,
       projectId: row.projectId,
       dueAt: row.deadlineEpochMs ? new Date(row.deadlineEpochMs).toISOString() : null,
+      dueHorizon: dueHorizonFromDb(row.preferredTime),
       durationMinutes: row.estimatedMinutes,
       priority: priorityFromDb(row.priority),
       status: taskStatusFromDb(row.status),
       revision: row.revision,
+      updatedAt: row.updatedAt.toISOString(),
     };
   }
 
@@ -517,6 +597,7 @@ export class PlannerV2Service {
       color: row.color,
       lifeArea: row.lifeArea,
       description: row.description,
+      targetDate: row.targetDate,
       active: row.active,
       revision: row.revision,
     };
@@ -533,6 +614,13 @@ export class PlannerV2Service {
       parentId: row.parentId,
       description: row.description,
       successCriteria: row.successCriteria,
+      outcome: row.outcome || row.title,
+      why: row.why,
+      metric: row.metric || row.successCriteria,
+      focusType: row.focusType,
+      currentMilestoneId: row.currentMilestoneId,
+      milestones: parseGoalMilestones(row.milestonesJson),
+      systems: parseGoalSystems(row.systemsJson),
       revision: row.revision,
     };
   }

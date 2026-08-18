@@ -18,5 +18,12 @@ export const goals = pgTable('goals', {
   parentId: text('parent_id'),
   successCriteria: text('success_criteria').notNull().default(''),
   capacityShare: real('capacity_share'),
+  outcome: text('outcome').notNull().default(''),
+  why: text('why').notNull().default(''),
+  metric: text('metric').notNull().default(''),
+  focusType: text('focus_type').notNull().default('FOCUS'),
+  currentMilestoneId: text('current_milestone_id'),
+  milestonesJson: text('milestones_json').notNull().default('[]'),
+  systemsJson: text('systems_json').notNull().default('[]'),
   ...syncColumns,
 });
