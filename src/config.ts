@@ -38,10 +38,17 @@ const envSchema = z.object({
   GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
   GOOGLE_OAUTH_REDIRECT_URI: z.string().optional(),
   GOOGLE_COS_CALENDAR_ID: z.string().optional(),
-  /** Where to redirect after Google OAuth (Personal OS web origin). */
-  PLANNER_WEB_RETURN_URL: z.string().url().default(
-    'https://personal-os-calendar-planner.terryson821.chatgpt.site',
-  ),
+  /**
+   * Optional comma-separated Google calendar IDs to pull as EXTERNAL (in addition to
+   * primary and selected calendars when calendarList is available).
+   * Write destination remains GOOGLE_COS_CALENDAR_ID / Personal Planner only.
+   */
+  GOOGLE_READ_CALENDAR_IDS: z.string().optional(),
+  /**
+   * Canonical Personal OS web origin for post-OAuth redirects (Vercel).
+   * Required in production. Do not set to *.chatgpt.site.
+   */
+  PLANNER_WEB_RETURN_URL: z.string().url().optional(),
   CALENDAR_PULL_INTERVAL_MS: z.coerce.number().int().positive().default(15 * 60_000),
   NOTIFY_MAX_PER_DAY: z.coerce.number().int().positive().default(8),
   PROACTIVE_SCAN_INTERVAL_MS: z.coerce.number().int().positive().default(45 * 60_000),

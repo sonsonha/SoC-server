@@ -16,6 +16,11 @@ import {
   isGoogleCalendarError,
   type GoogleCalendarErrorCode,
 } from '../../infrastructure/providers/calendar/googleErrors.js';
+import {
+  oauthErrorRedirectUrl,
+  oauthSuccessRedirectUrl,
+  resolvePlannerWebReturnUrl,
+} from './oauthReturnUrl.js';
 
 /** In-process last sync failure for status — not secrets, safe codes only. */
 let lastGoogleSyncError: {
@@ -45,11 +50,13 @@ export function googleAuthUrl(
   state?: string,
 ): { url: string; redirectUri: string; scopes: string[] } {
   const redirectUri = defaultRedirectUri(config);
-  // The configured Personal OS calendar only needs event read/write access. If no
-  // calendar ID is supplied, the provider also needs to find or create one.
-  const scopes = config.GOOGLE_COS_CALENDAR_ID
-    ? [GOOGLE_CALENDAR_EVENTS_SCOPE]
-    : [GOOGLE_CALENDAR_EVENTS_SCOPE, GOOGLE_CALENDAR_MANAGE_SCOPE, GOOGLE_CALENDAR_LIST_SCOPE];
+  // Always request calendarlist.readonly so EXTERNAL pull can discover selected
+  // calendars. Calendar create/manage only when no dedicated write calendar ID.
+  const scopes = [
+    GOOGLE_CALENDAR_EVENTS_SCOPE,
+    GOOGLE_CALENDAR_LIST_SCOPE,
+    ...(config.GOOGLE_COS_CALENDAR_ID ? [] : [GOOGLE_CALENDAR_MANAGE_SCOPE]),
+  ];
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   url.searchParams.set('client_id', config.GOOGLE_OAUTH_CLIENT_ID!);
   url.searchParams.set('redirect_uri', redirectUri);
@@ -187,14 +194,45 @@ export async function integrationRoutes(
         state: z.string().optional(),
       })
       .parse(request.query ?? {});
+
+    let webReturnConfigured = true;
+    try {
+      resolvePlannerWebReturnUrl(deps.config);
+    } catch {
+      webReturnConfigured = false;
+    }
+
+    const redirectOrHtml = (kind: 'success' | 'error', reason?: string) => {
+      if (!webReturnConfigured) {
+        const message = kind === 'success'
+          ? 'Google Calendar connected, but PLANNER_WEB_RETURN_URL is not set to your Vercel origin on Railway.'
+          : `Google Calendar connect failed (${reason ?? 'error'}). Set PLANNER_WEB_RETURN_URL to your Vercel origin.`;
+        return reply
+          .type('text/html')
+          .code(kind === 'success' ? 200 : 400)
+          .send(`<!doctype html><html><body style="font-family:system-ui;padding:2rem"><h1>${
+            kind === 'success' ? 'Connected' : 'Connect failed'
+          }</h1><p>${message}</p><p>Do not use *.chatgpt.site.</p></body></html>`);
+      }
+      try {
+        const target = kind === 'success'
+          ? oauthSuccessRedirectUrl(deps.config)
+          : oauthErrorRedirectUrl(deps.config, reason);
+        return reply.redirect(target);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return reply
+          .type('text/html')
+          .code(500)
+          .send(`<h1>OAuth return URL misconfigured</h1><pre>${message}</pre>`);
+      }
+    };
+
     if (q.error) {
-      return reply
-        .type('text/html')
-        .code(400)
-        .send(`<h1>Google Calendar connect failed</h1><p>${q.error}</p>`);
+      return redirectOrHtml('error', q.error);
     }
     if (!q.code) {
-      return reply.type('text/html').code(400).send('<h1>Missing OAuth code</h1>');
+      return redirectOrHtml('error', 'missing_code');
     }
     if (!deps.config.GOOGLE_OAUTH_CLIENT_ID || !deps.config.GOOGLE_OAUTH_CLIENT_SECRET) {
       return reply
@@ -213,18 +251,27 @@ export async function integrationRoutes(
         scopes: tokens.scope ?? null,
       });
       lastGoogleSyncError = null;
-      if (q.state && verifyWebOAuthState(q.state, deps.config.DEVICE_AUTH_PEPPER)) {
-        return reply.redirect(`${deps.config.PLANNER_WEB_RETURN_URL.replace(/\/$/, '')}/?google=connected`);
+      // Prefer redirect whenever return URL is configured. State verifies web
+      // connect flow; Android/manual connect still gets HTML only when return URL missing.
+      if (webReturnConfigured && (!q.state || verifyWebOAuthState(q.state, deps.config.DEVICE_AUTH_PEPPER))) {
+        return redirectOrHtml('success');
+      }
+      if (webReturnConfigured && q.state && !verifyWebOAuthState(q.state, deps.config.DEVICE_AUTH_PEPPER)) {
+        // Tokens saved; still send user back to Vercel with a soft error flag.
+        return redirectOrHtml('error', 'invalid_state');
       }
       return reply.type('text/html').send(`<!doctype html>
 <html><body style="font-family:system-ui;padding:2rem">
   <h1>Google Calendar connected</h1>
-  <p>Tokens saved on the server. Return to the app → Plan → <b>Rebuild cloud week</b>.</p>
+  <p>Tokens saved on the server. Return to Personal OS on Vercel.</p>
   <p>You can close this tab.</p>
 </body></html>`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       app.log.error({ err }, 'oauth-callback failed');
+      if (webReturnConfigured) {
+        return redirectOrHtml('error', 'token_exchange_failed');
+      }
       return reply
         .type('text/html')
         .code(400)

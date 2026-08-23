@@ -165,6 +165,48 @@ describe('GoogleCalendarProvider', () => {
     });
   });
 
+  it('paginates Events.list until nextPageToken is exhausted', async () => {
+    let page = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/calendarList')) {
+        return new Response(JSON.stringify({
+          items: [{ id: 'primary', summary: 'Primary', selected: true, primary: true }],
+        }), { status: 200 });
+      }
+      if (url.includes('/events')) {
+        page += 1;
+        if (page === 1) {
+          return new Response(JSON.stringify({
+            nextPageToken: 'page-2',
+            items: [{
+              id: 'evt-1',
+              summary: 'First page',
+              start: { dateTime: '2026-08-17T01:00:00Z' },
+              end: { dateTime: '2026-08-17T02:00:00Z' },
+            }],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'evt-2',
+            summary: 'Second page',
+            start: { dateTime: '2026-08-17T03:00:00Z' },
+            end: { dateTime: '2026-08-17T04:00:00Z' },
+          }],
+        }), { status: 200 });
+      }
+      return new Response('unexpected', { status: 500 });
+    }) as typeof fetch;
+
+    const provider = new GoogleCalendarProvider(
+      async () => ({ accessToken: 'access', expiresAt: new Date(Date.now() + 3600_000) }),
+      async () => null,
+    );
+    const events = await provider.listEvents(0, Date.parse('2026-08-24T00:00:00Z'));
+    expect(events.map((e) => e.eventId).sort()).toEqual(['evt-1', 'evt-2']);
+  });
+
   it('throws typed upstream errors instead of opaque strings', async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(JSON.stringify({ error: { status: 'INTERNAL' } }), { status: 503 }),
@@ -184,5 +226,49 @@ describe('GoogleCalendarProvider', () => {
         expect(err.googleStatus).toBe(503);
       }
     }
+  });
+
+  it('normalizes all-day events in Asia/Ho_Chi_Minh and pulls selected non-write calendars', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/calendarList')) {
+        return new Response(JSON.stringify({
+          items: [
+            { id: 'primary', summary: 'Primary', selected: true, primary: true },
+            { id: 'sports', summary: 'Thể thao', selected: true },
+            { id: 'hidden', summary: 'Hidden', selected: false },
+            { id: 'cos-cal', summary: 'Personal Planner', selected: true },
+          ],
+        }), { status: 200 });
+      }
+      if (url.includes('/calendars/sports/events')) {
+        return new Response(JSON.stringify({
+          items: [{
+            id: 'all-day-1',
+            summary: 'Holiday',
+            start: { date: '2026-08-18' },
+            end: { date: '2026-08-19' },
+          }],
+        }), { status: 200 });
+      }
+      if (url.includes('/calendars/primary/events')) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (url.includes('/calendars/cos-cal/events') || url.includes('/calendars/hidden/events')) {
+        throw new Error('should not fetch write/hidden calendars for EXTERNAL list');
+      }
+      return new Response('unexpected', { status: 500 });
+    }) as typeof fetch;
+
+    const provider = new GoogleCalendarProvider(
+      async () => ({ accessToken: 'access', expiresAt: new Date(Date.now() + 3600_000) }),
+      async () => null,
+      'cos-cal',
+    );
+    const events = await provider.listEvents(0, Date.parse('2026-08-24T00:00:00Z'));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.allDay).toBe(true);
+    expect(events[0]?.startEpochMs).toBe(Date.parse('2026-08-18T00:00:00+07:00'));
+    expect(events[0]?.endEpochMs).toBe(Date.parse('2026-08-19T00:00:00+07:00'));
   });
 });

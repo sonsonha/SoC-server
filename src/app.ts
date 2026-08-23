@@ -23,7 +23,10 @@ import {
   createDistanceMatrixProvider,
 } from './infrastructure/providers/maps/index.js';
 import { FakeCalendarProvider } from './infrastructure/providers/calendar/fakeCalendarProvider.js';
-import { GoogleCalendarProvider } from './infrastructure/providers/calendar/googleCalendarProvider.js';
+import {
+  GoogleCalendarProvider,
+  parseConfiguredReadCalendarIds,
+} from './infrastructure/providers/calendar/googleCalendarProvider.js';
 import { isGoogleCalendarError } from './infrastructure/providers/calendar/googleErrors.js';
 import type { CalendarProvider } from './infrastructure/providers/calendar/types.js';
 import { IntegrationTokenService } from './modules/integrations/tokenService.js';
@@ -184,6 +187,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
             };
           },
           deps.config.GOOGLE_COS_CALENDAR_ID,
+          parseConfiguredReadCalendarIds(deps.config.GOOGLE_READ_CALENDAR_IDS),
         ));
 
   const calendarPull = new CalendarPullService(

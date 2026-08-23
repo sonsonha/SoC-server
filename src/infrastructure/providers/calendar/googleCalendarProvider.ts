@@ -14,22 +14,52 @@ type TokenBundle = {
 
 const COS_CALENDAR_NAMES = ['Personal Planner', 'Personal Chief of Staff'] as const;
 const PLANNER_TZ = 'Asia/Ho_Chi_Minh';
+const PLANNER_TZ_OFFSET = '+07:00';
+
+export function parseConfiguredReadCalendarIds(raw?: string): string[] {
+  if (!raw?.trim()) return [];
+  return [...new Set(
+    raw.split(',')
+      .map((part) => part.trim())
+      .filter(Boolean),
+  )];
+}
+
+/** Normalize Google start/end — date-only values use Asia/Ho_Chi_Minh midnight. */
+export function parseGoogleEventBounds(
+  start?: { dateTime?: string; date?: string },
+  end?: { dateTime?: string; date?: string },
+): { startEpochMs: number; endEpochMs: number; allDay: boolean } | null {
+  const allDay = Boolean(start?.date && end?.date && !start.dateTime && !end.dateTime);
+  const startRaw = start?.dateTime ?? (start?.date ? `${start.date}T00:00:00${PLANNER_TZ_OFFSET}` : null);
+  const endRaw = end?.dateTime ?? (end?.date ? `${end.date}T00:00:00${PLANNER_TZ_OFFSET}` : null);
+  if (!startRaw || !endRaw) return null;
+  const startEpochMs = Date.parse(startRaw);
+  const endEpochMs = Date.parse(endRaw);
+  if (Number.isNaN(startEpochMs) || Number.isNaN(endEpochMs) || endEpochMs <= startEpochMs) return null;
+  return { startEpochMs, endEpochMs, allDay };
+}
 
 /**
  * Google Calendar adapter.
- * COS writes go to GOOGLE_COS_CALENDAR_ID, or a calendar named "Personal Planner"
- * (also matches legacy "Personal Chief of Staff"; created if missing).
+ * - WRITE: GOOGLE_COS_CALENDAR_ID or calendar named Personal Planner / Personal Chief of Staff
+ * - READ (EXTERNAL): primary + selected calendars (calendarList) + GOOGLE_READ_CALENDAR_IDS
+ *   Cos write calendar events are still fetched via listCosEvents for ownership reconcile,
+ *   and filtered out of EXTERNAL import when planner-owned.
  */
 export class GoogleCalendarProvider implements CalendarProvider {
   private readonly fallback = new FakeCalendarProvider();
   private resolvedCosCalendarId: string | null = null;
+  private readonly extraReadCalendarIds: string[];
 
   constructor(
     private readonly getTokens: () => Promise<TokenBundle | null>,
     private readonly refreshTokens: () => Promise<TokenBundle | null>,
     private readonly cosCalendarId?: string,
+    extraReadCalendarIds: string[] = [],
   ) {
     if (cosCalendarId) this.resolvedCosCalendarId = cosCalendarId;
+    this.extraReadCalendarIds = extraReadCalendarIds;
   }
 
   private async bearer(operation: string): Promise<string> {
@@ -99,6 +129,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
         nextPageToken?: string;
         items?: Array<{
           id?: string;
+          status?: string;
           summary?: string;
           location?: string;
           start?: { dateTime?: string; date?: string };
@@ -107,17 +138,16 @@ export class GoogleCalendarProvider implements CalendarProvider {
         }>;
       };
       for (const item of data.items ?? []) {
-        const startIso = item.start?.dateTime ?? item.start?.date;
-        const endIso = item.end?.dateTime ?? item.end?.date;
-        if (!item.id || !startIso || !endIso) continue;
-        const startEpochMs = new Date(startIso).getTime();
-        const endEpochMs = new Date(endIso).getTime();
-        if (Number.isNaN(startEpochMs) || Number.isNaN(endEpochMs)) continue;
+        if (!item.id) continue;
+        if (item.status === 'cancelled') continue;
+        const bounds = parseGoogleEventBounds(item.start, item.end);
+        if (!bounds) continue;
         events.push({
           eventId: item.id,
           title: item.summary ?? 'Busy',
-          startEpochMs,
-          endEpochMs,
+          startEpochMs: bounds.startEpochMs,
+          endEpochMs: bounds.endEpochMs,
+          allDay: bounds.allDay,
           location: item.location ?? null,
           calendarId,
           appMetadata: item.extendedProperties?.private,
@@ -128,10 +158,80 @@ export class GoogleCalendarProvider implements CalendarProvider {
     return events;
   }
 
+  /** Calendars to read as EXTERNAL (never writes here). */
+  private async resolveExternalCalendarIds(accessToken: string): Promise<string[]> {
+    const ids = new Set<string>(['primary', ...this.extraReadCalendarIds]);
+    const excludeIds = new Set<string>();
+    if (this.resolvedCosCalendarId) excludeIds.add(this.resolvedCosCalendarId);
+    if (this.cosCalendarId) excludeIds.add(this.cosCalendarId);
+    const cosNames = new Set(COS_CALENDAR_NAMES.map((n) => n.toLowerCase()));
+
+    const listRes = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (listRes.ok) {
+      const data = (await listRes.json()) as {
+        items?: Array<{
+          id?: string;
+          summary?: string;
+          selected?: boolean;
+          primary?: boolean;
+          accessRole?: string;
+        }>;
+      };
+      for (const item of data.items ?? []) {
+        if (!item.id) continue;
+        if (item.summary && cosNames.has(item.summary.toLowerCase())) {
+          excludeIds.add(item.id);
+          if (!this.resolvedCosCalendarId) this.resolvedCosCalendarId = item.id;
+          continue;
+        }
+        // Match Google UI: include calendars the user has selected as visible.
+        if (item.selected === false) continue;
+        if (item.accessRole === 'none') continue;
+        ids.add(item.id);
+      }
+      console.info('google.externalCalendars', {
+        count: [...ids].filter((id) => !excludeIds.has(id)).length,
+        via: 'calendarList+configured',
+      });
+    } else {
+      const detail = await listRes.text();
+      console.error('google.calendarList for read failed', {
+        googleStatus: listRes.status,
+        ...parseGoogleErrorBody(detail),
+      });
+      // Fall back to primary + explicit IDs when list scope is missing.
+    }
+
+    return [...ids].filter((id) => !excludeIds.has(id));
+  }
+
   async listEvents(fromEpochMs: number, toEpochMs: number): Promise<CalendarEvent[]> {
     try {
       const accessToken = await this.bearer('listEvents');
-      return await this.fetchEvents(accessToken, 'primary', fromEpochMs, toEpochMs, 'listEvents');
+      const calendarIds = await this.resolveExternalCalendarIds(accessToken);
+      const pages = await Promise.all(
+        calendarIds.map((calendarId) =>
+          this.fetchEvents(accessToken, calendarId, fromEpochMs, toEpochMs, 'listEvents')
+            .catch((err) => {
+              // One bad calendar must not fail the whole EXTERNAL pull.
+              console.error('google.listEvents calendar failed', {
+                calendarId,
+                ...(err instanceof GoogleCalendarError
+                  ? err.toLogFields()
+                  : { message: err instanceof Error ? err.message : 'unknown' }),
+              });
+              return [] as CalendarEvent[];
+            }),
+        ),
+      );
+      const byKey = new Map<string, CalendarEvent>();
+      for (const event of pages.flat()) {
+        const key = `${event.calendarId ?? 'primary'}:${event.eventId}`;
+        byKey.set(key, event);
+      }
+      return [...byKey.values()];
     } catch (err) {
       if (err instanceof GoogleCalendarError && err.code === 'GOOGLE_NOT_CONNECTED') {
         return this.fallback.listEvents(fromEpochMs, toEpochMs);

@@ -40,28 +40,28 @@ describe('web Google OAuth state', () => {
 });
 
 describe('Google OAuth URL', () => {
-  it('requests only event access when the Personal OS calendar ID is configured', () => {
-    const result = googleAuthUrl(oauthConfig({ GOOGLE_COS_CALENDAR_ID: 'planner@example.com' }), 'state');
-    const url = new URL(result.url);
+  it('always requests calendarlist.readonly; create scope only without COS calendar ID', () => {
+    const withCos = googleAuthUrl(oauthConfig({ GOOGLE_COS_CALENDAR_ID: 'planner@example.com' }), 'state');
+    const url = new URL(withCos.url);
 
     expect(url.searchParams.get('redirect_uri')).toBe(
       'https://soc-server-production.up.railway.app/v1/integrations/google/oauth-callback',
     );
-    expect(url.searchParams.get('scope')).toBe(
+    expect(withCos.scopes).toEqual([
       'https://www.googleapis.com/auth/calendar.events',
-    );
+      'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+    ]);
     expect(url.searchParams.get('include_granted_scopes')).toBe('true');
     expect(url.searchParams.get('state')).toBe('state');
-    expect(result.scopes).toEqual(['https://www.googleapis.com/auth/calendar.events']);
   });
 
-  it('adds calendar discovery and creation scopes only when no calendar ID is configured', () => {
+  it('adds calendar create scope when no write calendar ID is configured', () => {
     const result = googleAuthUrl(oauthConfig());
 
     expect(result.scopes).toEqual([
       'https://www.googleapis.com/auth/calendar.events',
-      'https://www.googleapis.com/auth/calendar.calendars',
       'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+      'https://www.googleapis.com/auth/calendar.calendars',
     ]);
   });
 });

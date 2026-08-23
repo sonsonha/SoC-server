@@ -5,12 +5,18 @@ export type CalendarEvent = {
   endEpochMs: number;
   location?: string | null;
   calendarId?: string;
+  /** True when Google used date-only start/end (all-day). */
+  allDay?: boolean;
   /** Private metadata written only on planner-owned event copies. */
   appMetadata?: Record<string, string>;
 };
 
 export interface CalendarProvider {
-  /** Events from the user's primary calendar, treated as external unless owned by Personal OS. */
+  /**
+   * EXTERNAL Google events for capacity/planning.
+   * Implementations may aggregate primary + selected/configured calendars.
+   * Must never mutate these events.
+   */
   listEvents(fromEpochMs: number, toEpochMs: number): Promise<CalendarEvent[]>;
   /** Events from the calendar Personal OS writes to, used for two-way reconciliation. */
   listCosEvents?(fromEpochMs: number, toEpochMs: number): Promise<CalendarEvent[]>;
