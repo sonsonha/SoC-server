@@ -17,6 +17,7 @@
     "planner:enforce-ownership-not-null": "tsx scripts/enforce-planner-ownership-not-null.ts",
     "calendar:backfill-owner": "tsx scripts/backfill-calendar-owner.ts",
     "calendar:enforce-ownership-not-null": "tsx scripts/enforce-calendar-ownership-not-null.ts",
+    "calendar:verify-schema": "tsx scripts/verify-calendar-schema.ts",
     "onboarding:backfill-owner": "tsx scripts/backfill-onboarding-owner.ts",
     "dev:data:reset": "tsx scripts/dev-data-reset.ts",
     "test": "vitest run",

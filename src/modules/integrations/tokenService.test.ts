@@ -65,6 +65,73 @@ describe('IntegrationTokenService refresh token persistence', () => {
     expect(rows[0]!.accessTokenEnc).toBe('enc:new-access');
   });
 
+  it('claims legacy orphan NULL user_id row on save', async () => {
+    const rows: Array<Record<string, unknown>> = [{
+      id: 'orphan-1',
+      userId: null,
+      provider: 'google_calendar',
+      accessTokenEnc: 'enc:old-access',
+      refreshTokenEnc: 'enc:orphan-refresh',
+      expiresAt: new Date(Date.now() - 60_000),
+      scopes: 'openid email',
+      googleAccountSub: null,
+      googleAccountEmail: null,
+      writeCalendarId: null,
+      status: 'connected',
+      lastErrorCode: null,
+      lastSyncAt: null,
+      updatedAt: new Date(),
+    }];
+    let selectCalls = 0;
+
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async (n: number) => {
+              selectCalls += 1;
+              // 1st: getOrphan in test; 2nd: user-scoped in save; 3rd: orphan claim in save
+              if (selectCalls === 2) return [];
+              return rows.filter((r) => r.userId == null).slice(0, n);
+            },
+          }),
+        }),
+      }),
+      update: () => ({
+        set: (values: Record<string, unknown>) => ({
+          where: async () => {
+            Object.assign(rows[0]!, values);
+          },
+        }),
+      }),
+      insert: () => ({
+        values: async () => {
+          throw new Error('insert should not run when claiming orphan');
+        },
+      }),
+      delete: () => ({ where: async () => undefined }),
+    };
+
+    const service = new IntegrationTokenService(db as never, 'test-encryption-key');
+    const orphan = await service.getOrphanGoogleCalendarTokens();
+    expect(orphan?.refreshToken).toBe('orphan-refresh');
+
+    const result = await service.saveGoogleCalendarTokens('user-owner', {
+      accessToken: 'new-access',
+      refreshToken: null,
+      expiresAt: new Date(Date.now() + 3600_000),
+      scopes: 'calendar',
+      googleAccountSub: 'sub-owner',
+      googleAccountEmail: 'owner@example.com',
+    });
+    expect(result.claimedOrphan).toBe(true);
+    expect(result.preservedRefreshToken).toBe(true);
+    expect(result.hasRefreshToken).toBe(true);
+    expect(rows[0]!.userId).toBe('user-owner');
+    expect(rows[0]!.refreshTokenEnc).toBe('enc:orphan-refresh');
+    expect(rows[0]!.googleAccountEmail).toBe('owner@example.com');
+  });
+
   it('stores refresh token on initial connect', async () => {
     const rows: Array<Record<string, unknown>> = [];
     const service = new IntegrationTokenService(makeDb(rows) as never, 'test-encryption-key');
@@ -78,6 +145,7 @@ describe('IntegrationTokenService refresh token persistence', () => {
     });
     expect(result.preservedRefreshToken).toBe(false);
     expect(result.hasRefreshToken).toBe(true);
+    expect(result.claimedOrphan).toBe(false);
     expect(rows[0]!.refreshTokenEnc).toBe('enc:fresh-refresh');
   });
 

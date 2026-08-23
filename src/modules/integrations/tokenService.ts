@@ -36,19 +36,7 @@ export class IntegrationTokenService {
     private readonly encryptionKey: string,
   ) {}
 
-  async getGoogleCalendarTokens(userId: string): Promise<StoredTokens | null> {
-    const rows = await this.db
-      .select()
-      .from(integrationTokens)
-      .where(
-        and(
-          eq(integrationTokens.userId, userId),
-          eq(integrationTokens.provider, GOOGLE_CALENDAR_PROVIDER),
-        ),
-      )
-      .limit(1);
-    const row = rows[0];
-    if (!row) return null;
+  private toStored(row: typeof integrationTokens.$inferSelect): StoredTokens {
     return {
       accessToken: decryptSecret(row.accessTokenEnc, this.encryptionKey),
       refreshToken: row.refreshTokenEnc
@@ -65,6 +53,41 @@ export class IntegrationTokenService {
     };
   }
 
+  async getGoogleCalendarTokens(userId: string): Promise<StoredTokens | null> {
+    const rows = await this.db
+      .select()
+      .from(integrationTokens)
+      .where(
+        and(
+          eq(integrationTokens.userId, userId),
+          eq(integrationTokens.provider, GOOGLE_CALENDAR_PROVIDER),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    if (!row) return null;
+    return this.toStored(row);
+  }
+
+  /**
+   * Legacy singleton left by incomplete Batch C backfill (`user_id` NULL).
+   * Only when exactly one such row exists.
+   */
+  async getOrphanGoogleCalendarTokens(): Promise<StoredTokens | null> {
+    const rows = await this.db
+      .select()
+      .from(integrationTokens)
+      .where(
+        and(
+          isNull(integrationTokens.userId),
+          eq(integrationTokens.provider, GOOGLE_CALENDAR_PROVIDER),
+        ),
+      )
+      .limit(2);
+    if (rows.length !== 1 || !rows[0]) return null;
+    return this.toStored(rows[0]);
+  }
+
   async saveGoogleCalendarTokens(
     userId: string,
     input: {
@@ -79,7 +102,11 @@ export class IntegrationTokenService {
       status?: string;
       lastErrorCode?: string | null;
     },
-  ): Promise<{ preservedRefreshToken: boolean; hasRefreshToken: boolean }> {
+  ): Promise<{
+    preservedRefreshToken: boolean;
+    hasRefreshToken: boolean;
+    claimedOrphan: boolean;
+  }> {
     const existing = await this.db
       .select()
       .from(integrationTokens)
@@ -92,33 +119,56 @@ export class IntegrationTokenService {
       .limit(1);
     const now = new Date();
     const incomingRefresh = input.refreshToken?.trim() || null;
-    if (existing[0]) {
-      const preserved = !incomingRefresh && Boolean(existing[0].refreshTokenEnc);
+
+    let target = existing[0];
+    let claimedOrphan = false;
+    if (!target) {
+      const orphans = await this.db
+        .select()
+        .from(integrationTokens)
+        .where(
+          and(
+            isNull(integrationTokens.userId),
+            eq(integrationTokens.provider, GOOGLE_CALENDAR_PROVIDER),
+          ),
+        )
+        .limit(2);
+      if (orphans.length === 1 && orphans[0]) {
+        target = orphans[0];
+        claimedOrphan = true;
+      }
+    }
+
+    if (target) {
+      const preserved = !incomingRefresh && Boolean(target.refreshTokenEnc);
       await this.db
         .update(integrationTokens)
         .set({
+          userId,
           accessTokenEnc: encryptSecret(input.accessToken, this.encryptionKey),
           // Never wipe a stored refresh token when Google omits refresh_token on re-consent.
           refreshTokenEnc: incomingRefresh
             ? encryptSecret(incomingRefresh, this.encryptionKey)
-            : existing[0].refreshTokenEnc,
-          expiresAt: input.expiresAt ?? existing[0].expiresAt,
-          scopes: input.scopes ?? existing[0].scopes,
+            : target.refreshTokenEnc,
+          expiresAt: input.expiresAt ?? target.expiresAt,
+          scopes: input.scopes ?? target.scopes,
           googleAccountSub: input.googleAccountSub,
           googleAccountEmail: input.googleAccountEmail,
           writeCalendarId: input.writeCalendarId === undefined
-            ? existing[0].writeCalendarId
+            ? target.writeCalendarId
             : input.writeCalendarId,
           status: input.status ?? 'connected',
           lastErrorCode: input.lastErrorCode === undefined ? null : input.lastErrorCode,
           updatedAt: now,
         })
-        .where(eq(integrationTokens.id, existing[0].id));
+        .where(eq(integrationTokens.id, target.id));
       return {
         preservedRefreshToken: preserved,
-        hasRefreshToken: Boolean(incomingRefresh || existing[0].refreshTokenEnc),
+        hasRefreshToken: Boolean(incomingRefresh || target.refreshTokenEnc),
+        claimedOrphan,
       };
     }
+
     await this.db.insert(integrationTokens).values({
       id: randomUUID(),
       userId,
@@ -139,6 +189,7 @@ export class IntegrationTokenService {
     return {
       preservedRefreshToken: false,
       hasRefreshToken: Boolean(incomingRefresh),
+      claimedOrphan: false,
     };
   }
 
@@ -203,7 +254,7 @@ export class IntegrationTokenService {
       .select({ userId: integrationTokens.userId })
       .from(integrationTokens)
       .where(eq(integrationTokens.provider, GOOGLE_CALENDAR_PROVIDER));
-    return rows.map((r) => r.userId);
+    return rows.map((r) => r.userId).filter((id): id is string => Boolean(id));
   }
 
   async getPublicStatus(userId: string, opts?: { useFakeProviders?: boolean }): Promise<IntegrationPublicStatus> {

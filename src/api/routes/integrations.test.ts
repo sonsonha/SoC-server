@@ -94,4 +94,17 @@ describe('googleScopesSatisfied', () => {
       ),
     ).toBe(false);
   });
+
+  it('does not require openid/email literals when calendar scopes are present', async () => {
+    const { googleScopesSatisfied } = await import('./integrations.js');
+    expect(
+      googleScopesSatisfied(
+        [
+          'https://www.googleapis.com/auth/calendar.events',
+          'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+          'https://www.googleapis.com/auth/calendar.calendars',
+        ].join(' '),
+      ),
+    ).toBe(true);
+  });
 });

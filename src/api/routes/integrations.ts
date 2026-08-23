@@ -84,10 +84,8 @@ export function googleAuthUrl(
   return { url: url.toString(), redirectUri, scopes };
 }
 
-/** Required Calendar OAuth scopes (aliases accepted for email). */
+/** Calendar scopes that must be granted (openid/email verified via userinfo separately). */
 export const REQUIRED_GOOGLE_CALENDAR_SCOPES = [
-  GOOGLE_OPENID_SCOPE,
-  GOOGLE_EMAIL_SCOPE,
   GOOGLE_CALENDAR_EVENTS_SCOPE,
   GOOGLE_CALENDAR_LIST_SCOPE,
   GOOGLE_CALENDAR_MANAGE_SCOPE,
@@ -96,9 +94,6 @@ export const REQUIRED_GOOGLE_CALENDAR_SCOPES = [
 export function googleScopesSatisfied(grantedRaw: string | null | undefined): boolean {
   if (!grantedRaw?.trim()) return false;
   const granted = new Set(grantedRaw.split(/\s+/).filter(Boolean));
-  if (granted.has('https://www.googleapis.com/auth/userinfo.email')) {
-    granted.add(GOOGLE_EMAIL_SCOPE);
-  }
   return REQUIRED_GOOGLE_CALENDAR_SCOPES.every((scope) => granted.has(scope));
 }
 
@@ -378,6 +373,13 @@ export async function integrationRoutes(
     }
     const { rawState } = await deps.oauthStates.create(request.posUser.id);
     const result = googleAuthUrl(deps.config, rawState);
+    app.log.info({
+      event: 'oauth.auth_url',
+      userId: request.posUser.id,
+      stateCreated: true,
+      redirectUri: result.redirectUri,
+      scopeCount: result.scopes.length,
+    }, 'calendar oauth state created');
     return reply.send({
       mode: 'oauth',
       url: result.url,
@@ -449,14 +451,41 @@ export async function integrationRoutes(
 
     const userId = await deps.oauthStates.consume(q.state);
     if (!userId) {
+      app.log.warn({
+        event: 'oauth.callback',
+        statePresent: Boolean(q.state),
+        stateValid: false,
+        stateConsumed: false,
+        resolvedUserId: null,
+        status: 'invalid_state',
+        errorCode: 'INVALID_OAUTH_STATE',
+      }, 'calendar oauth state missing/expired/replayed');
       return redirectOrHtml('error', 'invalid_state');
     }
+
+    app.log.info({
+      event: 'oauth.callback',
+      statePresent: Boolean(q.state),
+      stateValid: true,
+      stateConsumed: true,
+      resolvedUserId: userId,
+      status: 'state_ok',
+    }, 'calendar oauth state consumed');
 
     try {
       const tokens = await exchangeGoogleCode(deps.config, q.code);
       const googleIdentity = await fetchGoogleAccountIdentity(tokens.access_token);
       if (!googleIdentity) {
-        app.log.warn({ userId, event: 'oauth.callback' }, 'google identity missing from access token');
+        app.log.warn({
+          event: 'oauth.callback',
+          userId,
+          tokenExchange: true,
+          hasAccessToken: Boolean(tokens.access_token),
+          hasRefreshToken: Boolean(tokens.refresh_token),
+          googleSubObtained: false,
+          status: 'account_mismatch',
+          errorCode: 'GOOGLE_ACCOUNT_MISMATCH',
+        }, 'google identity missing from access token');
         return redirectOrHtml('error', 'account_mismatch');
       }
 
@@ -470,6 +499,8 @@ export async function integrationRoutes(
         app.log.warn({
           event: 'oauth.callback',
           userId,
+          personalOsGoogleSubPresent: Boolean(user.googleSub),
+          googleSubObtained: true,
           accountMatch: false,
           hasAccessToken: Boolean(tokens.access_token),
           hasRefreshToken: Boolean(tokens.refresh_token),
@@ -481,16 +512,24 @@ export async function integrationRoutes(
       }
 
       const existing = await deps.tokenService.getGoogleCalendarTokens(userId);
-      const effectiveRefresh = tokens.refresh_token?.trim() || existing?.refreshToken || null;
+      const orphan = existing ? null : await deps.tokenService.getOrphanGoogleCalendarTokens();
+      const effectiveRefresh =
+        tokens.refresh_token?.trim()
+        || existing?.refreshToken
+        || orphan?.refreshToken
+        || null;
       if (!effectiveRefresh) {
         app.log.warn({
           event: 'oauth.callback',
           userId,
           accountMatch: true,
+          tokenExchange: true,
           hasAccessToken: Boolean(tokens.access_token),
           hasRefreshToken: false,
+          orphanRefreshAvailable: false,
           scopeCount: tokens.scope?.split(/\s+/).filter(Boolean).length ?? 0,
           writeCalendarResolved: false,
+          upsertAttempted: false,
           status: 'missing_refresh_token',
           errorCode: 'MISSING_REFRESH_TOKEN',
         }, 'calendar oauth missing refresh_token');
@@ -506,25 +545,64 @@ export async function integrationRoutes(
           hasRefreshToken: true,
           scopeCount: tokens.scope.split(/\s+/).filter(Boolean).length,
           writeCalendarResolved: false,
+          upsertAttempted: false,
           status: 'insufficient_scopes',
           errorCode: 'GOOGLE_FORBIDDEN',
         }, 'calendar oauth missing required scopes');
         return redirectOrHtml('error', 'insufficient_scopes');
       }
 
-      const saved = await deps.tokenService.saveGoogleCalendarTokens(userId, {
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token ?? null,
-        expiresAt: tokens.expires_in
-          ? new Date(Date.now() + tokens.expires_in * 1000)
-          : null,
-        scopes: tokens.scope ?? null,
-        googleAccountSub: googleIdentity.sub,
-        googleAccountEmail: googleIdentity.email,
-        status: 'connected',
-        lastErrorCode: null,
-      });
+      let saved: {
+        preservedRefreshToken: boolean;
+        hasRefreshToken: boolean;
+        claimedOrphan: boolean;
+      };
+      try {
+        saved = await deps.tokenService.saveGoogleCalendarTokens(userId, {
+          accessToken: tokens.access_token,
+          refreshToken: tokens.refresh_token ?? null,
+          expiresAt: tokens.expires_in
+            ? new Date(Date.now() + tokens.expires_in * 1000)
+            : null,
+          scopes: tokens.scope ?? null,
+          googleAccountSub: googleIdentity.sub,
+          googleAccountEmail: googleIdentity.email,
+          status: 'connected',
+          lastErrorCode: null,
+        });
+      } catch (upsertErr) {
+        const message = upsertErr instanceof Error ? upsertErr.message : String(upsertErr);
+        app.log.error({
+          event: 'oauth.callback',
+          userId,
+          accountMatch: true,
+          hasAccessToken: true,
+          hasRefreshToken: Boolean(effectiveRefresh),
+          upsertAttempted: true,
+          upsertSucceeded: false,
+          status: 'upsert_failed',
+          errorCode: 'INTEGRATION_UPSERT_FAILED',
+          dbError: message.slice(0, 200),
+        }, 'calendar oauth integration_tokens upsert failed');
+        return redirectOrHtml('error', 'upsert_failed');
+      }
       clearSyncError(userId);
+
+      app.log.info({
+        event: 'oauth.callback',
+        userId,
+        accountMatch: true,
+        tokenExchange: true,
+        hasAccessToken: true,
+        hasRefreshToken: saved.hasRefreshToken,
+        preservedRefreshToken: saved.preservedRefreshToken,
+        claimedOrphan: saved.claimedOrphan,
+        tokenExpiryPresent: Boolean(tokens.expires_in),
+        scopeCount: tokens.scope?.split(/\s+/).filter(Boolean).length ?? 0,
+        upsertAttempted: true,
+        upsertSucceeded: true,
+        status: 'tokens_persisted',
+      }, 'calendar oauth tokens persisted');
 
       let writeCalendarResolved = false;
       try {
@@ -547,12 +625,14 @@ export async function integrationRoutes(
           hasAccessToken: true,
           hasRefreshToken: saved.hasRefreshToken,
           preservedRefreshToken: saved.preservedRefreshToken,
+          claimedOrphan: saved.claimedOrphan,
           scopeCount: tokens.scope?.split(/\s+/).filter(Boolean).length ?? 0,
+          upsertSucceeded: true,
           writeCalendarResolved: false,
           status: 'write_calendar_failed',
           errorCode: code,
-        }, 'write calendar resolve failed after oauth');
-        // Tokens are durable; do not redirect as connected-success if write calendar cannot be created.
+        }, 'write calendar resolve failed after oauth — tokens kept');
+        // Tokens remain persisted; do not claim connected success.
         if (code === 'GOOGLE_FORBIDDEN') {
           return redirectOrHtml('error', 'insufficient_scopes');
         }
@@ -567,6 +647,7 @@ export async function integrationRoutes(
         hasAccessToken: true,
         hasRefreshToken: saved.hasRefreshToken,
         preservedRefreshToken: saved.preservedRefreshToken,
+        claimedOrphan: saved.claimedOrphan,
         tokenExpiryPresent: Boolean(tokens.expires_in),
         scopeCount: tokens.scope?.split(/\s+/).filter(Boolean).length ?? 0,
         writeCalendarResolved,
@@ -576,6 +657,7 @@ export async function integrationRoutes(
         reconnectRequired: status.reconnectRequired,
         status: 'connected',
         errorCode: null,
+        finalRedirect: 'google=connected',
       }, 'calendar oauth callback success');
 
       if (webReturnConfigured) {

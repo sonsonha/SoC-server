@@ -141,6 +141,13 @@
       "when": 1720000019000,
       "tag": "0021_onboarding_completed_at",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1720000020000,
+      "tag": "0022_calendar_token_ownership_repair",
+      "breakpoints": true
     }
   ]
 }
