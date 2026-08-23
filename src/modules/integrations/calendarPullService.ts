@@ -169,8 +169,7 @@ export class CalendarPullService {
         errorCode: pullError.code,
         errorMessage: pullError.message,
         googleStatus: pullError.googleStatus ?? null,
-        reconnectRequired: pullError.code === 'GOOGLE_RECONNECT_REQUIRED'
-          || pullError.code === 'GOOGLE_FORBIDDEN',
+        reconnectRequired: pullError.code === 'GOOGLE_RECONNECT_REQUIRED',
       };
     }
 
@@ -415,8 +414,7 @@ export class CalendarPullService {
       errorCode: pullError?.code ?? null,
       errorMessage: pullError?.message ?? null,
       googleStatus: pullError?.googleStatus ?? null,
-      reconnectRequired: pullError?.code === 'GOOGLE_RECONNECT_REQUIRED'
-        || pullError?.code === 'GOOGLE_FORBIDDEN',
+      reconnectRequired: pullError?.code === 'GOOGLE_RECONNECT_REQUIRED',
     };
   }
 

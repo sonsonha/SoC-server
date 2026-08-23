@@ -56,12 +56,42 @@ describe('Google OAuth URL', () => {
       'https://soc-server-production.up.railway.app/v1/integrations/google/oauth-callback',
     );
     expect(withCos.scopes).toEqual(EXPECTED_SCOPES);
-    expect(url.searchParams.get('include_granted_scopes')).toBe('true');
+    expect(url.searchParams.get('access_type')).toBe('offline');
+    expect(url.searchParams.get('prompt')).toBe('consent');
     expect(url.searchParams.get('state')).toBe('state');
   });
 
-  it('does not gate calendars manage on GOOGLE_COS_CALENDAR_ID', () => {
-    const result = googleAuthUrl(oauthConfig());
-    expect(result.scopes).toEqual(EXPECTED_SCOPES);
+  it('requests offline access with explicit consent (refresh_token)', () => {
+    const result = googleAuthUrl(oauthConfig(), 'state');
+    const url = new URL(result.url);
+    expect(url.searchParams.get('access_type')).toBe('offline');
+    expect(url.searchParams.get('prompt')).toBe('consent');
+    expect(url.searchParams.get('include_granted_scopes')).toBeNull();
+  });
+});
+
+describe('googleScopesSatisfied', () => {
+  it('accepts the required calendar scopes', async () => {
+    const { googleScopesSatisfied } = await import('./integrations.js');
+    expect(
+      googleScopesSatisfied(
+        [
+          'openid',
+          'email',
+          'https://www.googleapis.com/auth/calendar.events',
+          'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+          'https://www.googleapis.com/auth/calendar.calendars',
+        ].join(' '),
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects missing calendars manage scope', async () => {
+    const { googleScopesSatisfied } = await import('./integrations.js');
+    expect(
+      googleScopesSatisfied(
+        'openid email https://www.googleapis.com/auth/calendar.events',
+      ),
+    ).toBe(false);
   });
 });

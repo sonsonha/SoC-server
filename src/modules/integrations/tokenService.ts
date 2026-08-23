@@ -69,6 +69,7 @@ export class IntegrationTokenService {
     userId: string,
     input: {
       accessToken: string;
+      /** When omitted/null and a row exists, the previous refresh token is preserved. */
       refreshToken?: string | null;
       expiresAt?: Date | null;
       scopes?: string | null;
@@ -78,7 +79,7 @@ export class IntegrationTokenService {
       status?: string;
       lastErrorCode?: string | null;
     },
-  ): Promise<void> {
+  ): Promise<{ preservedRefreshToken: boolean; hasRefreshToken: boolean }> {
     const existing = await this.db
       .select()
       .from(integrationTokens)
@@ -90,13 +91,16 @@ export class IntegrationTokenService {
       )
       .limit(1);
     const now = new Date();
+    const incomingRefresh = input.refreshToken?.trim() || null;
     if (existing[0]) {
+      const preserved = !incomingRefresh && Boolean(existing[0].refreshTokenEnc);
       await this.db
         .update(integrationTokens)
         .set({
           accessTokenEnc: encryptSecret(input.accessToken, this.encryptionKey),
-          refreshTokenEnc: input.refreshToken
-            ? encryptSecret(input.refreshToken, this.encryptionKey)
+          // Never wipe a stored refresh token when Google omits refresh_token on re-consent.
+          refreshTokenEnc: incomingRefresh
+            ? encryptSecret(incomingRefresh, this.encryptionKey)
             : existing[0].refreshTokenEnc,
           expiresAt: input.expiresAt ?? existing[0].expiresAt,
           scopes: input.scopes ?? existing[0].scopes,
@@ -110,15 +114,18 @@ export class IntegrationTokenService {
           updatedAt: now,
         })
         .where(eq(integrationTokens.id, existing[0].id));
-      return;
+      return {
+        preservedRefreshToken: preserved,
+        hasRefreshToken: Boolean(incomingRefresh || existing[0].refreshTokenEnc),
+      };
     }
     await this.db.insert(integrationTokens).values({
       id: randomUUID(),
       userId,
       provider: GOOGLE_CALENDAR_PROVIDER,
       accessTokenEnc: encryptSecret(input.accessToken, this.encryptionKey),
-      refreshTokenEnc: input.refreshToken
-        ? encryptSecret(input.refreshToken, this.encryptionKey)
+      refreshTokenEnc: incomingRefresh
+        ? encryptSecret(incomingRefresh, this.encryptionKey)
         : null,
       expiresAt: input.expiresAt ?? null,
       scopes: input.scopes ?? null,
@@ -129,6 +136,10 @@ export class IntegrationTokenService {
       lastErrorCode: input.lastErrorCode ?? null,
       updatedAt: now,
     });
+    return {
+      preservedRefreshToken: false,
+      hasRefreshToken: Boolean(incomingRefresh),
+    };
   }
 
   async setWriteCalendarId(userId: string, writeCalendarId: string): Promise<void> {
@@ -199,9 +210,10 @@ export class IntegrationTokenService {
     const tokens = await this.getGoogleCalendarTokens(userId);
     const isFake = tokens?.accessToken === 'fake-access-token';
     const connected = Boolean(tokens) && !isFake;
+    // Missing refresh token or explicit reconnect status → must re-consent.
+    // GOOGLE_FORBIDDEN is a permission problem — not an OAuth reconnect loop trigger.
     const reconnectRequired = tokens?.status === 'reconnect_required'
       || tokens?.lastErrorCode === 'GOOGLE_RECONNECT_REQUIRED'
-      || tokens?.lastErrorCode === 'GOOGLE_FORBIDDEN'
       || Boolean(connected && !tokens?.refreshToken);
     const mode = opts?.useFakeProviders || isFake
       ? 'fake'

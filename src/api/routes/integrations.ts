@@ -21,6 +21,7 @@ import {
   OAuthConnectionStateService,
   fetchGoogleAccountIdentity,
 } from '../../modules/integrations/oauthConnectionState.js';
+import { createUserCalendarProviderAsync } from '../../modules/integrations/userCalendarProvider.js';
 import {
   oauthErrorRedirectUrl,
   oauthSuccessRedirectUrl,
@@ -75,11 +76,30 @@ export function googleAuthUrl(
   url.searchParams.set('redirect_uri', redirectUri);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('scope', scopes.join(' '));
+  // Durable offline access — required for Sync after the access token expires.
   url.searchParams.set('access_type', 'offline');
+  // Force consent so Google issues a refresh_token on Connect and Reconnect.
   url.searchParams.set('prompt', 'consent');
-  url.searchParams.set('include_granted_scopes', 'true');
   if (state) url.searchParams.set('state', state);
   return { url: url.toString(), redirectUri, scopes };
+}
+
+/** Required Calendar OAuth scopes (aliases accepted for email). */
+export const REQUIRED_GOOGLE_CALENDAR_SCOPES = [
+  GOOGLE_OPENID_SCOPE,
+  GOOGLE_EMAIL_SCOPE,
+  GOOGLE_CALENDAR_EVENTS_SCOPE,
+  GOOGLE_CALENDAR_LIST_SCOPE,
+  GOOGLE_CALENDAR_MANAGE_SCOPE,
+] as const;
+
+export function googleScopesSatisfied(grantedRaw: string | null | undefined): boolean {
+  if (!grantedRaw?.trim()) return false;
+  const granted = new Set(grantedRaw.split(/\s+/).filter(Boolean));
+  if (granted.has('https://www.googleapis.com/auth/userinfo.email')) {
+    granted.add(GOOGLE_EMAIL_SCOPE);
+  }
+  return REQUIRED_GOOGLE_CALENDAR_SCOPES.every((scope) => granted.has(scope));
 }
 
 /** HMAC state helpers — kept for backward-compat unit tests; V2 uses OAuthConnectionStateService. */
@@ -237,8 +257,7 @@ export async function integrationRoutes(
       healthy: status.healthy && !syncErr,
       reconnectRequired:
         status.reconnectRequired
-        || syncErr?.code === 'GOOGLE_RECONNECT_REQUIRED'
-        || syncErr?.code === 'GOOGLE_FORBIDDEN',
+        || syncErr?.code === 'GOOGLE_RECONNECT_REQUIRED',
       mode: status.mode,
       googleAccountEmail: status.googleAccountEmail,
       lastSyncAt,
@@ -279,10 +298,8 @@ export async function integrationRoutes(
         : { attempted: 0, synced: 0, failed: 0 };
 
       if (summary.errorCode) {
-        if (
-          summary.errorCode === 'GOOGLE_FORBIDDEN'
-          || summary.errorCode === 'GOOGLE_RECONNECT_REQUIRED'
-        ) {
+        // Permission / upstream errors must not force an OAuth reconnect loop.
+        if (summary.errorCode === 'GOOGLE_RECONNECT_REQUIRED') {
           await deps.tokenService.markReconnectRequired(userId, summary.errorCode);
         }
         setSyncError(userId, {
@@ -298,10 +315,7 @@ export async function integrationRoutes(
       return reply.send({ ok: true, summary: { ...summary, retry } });
     } catch (err) {
       if (isGoogleCalendarError(err)) {
-        if (
-          err.code === 'GOOGLE_RECONNECT_REQUIRED'
-          || err.code === 'GOOGLE_FORBIDDEN'
-        ) {
+        if (err.code === 'GOOGLE_RECONNECT_REQUIRED') {
           await deps.tokenService.markReconnectRequired(userId, err.code);
         }
         setSyncError(userId, {
@@ -321,8 +335,7 @@ export async function integrationRoutes(
             ownedRemoved: 0,
             replannedDates: [],
             connected: false,
-            reconnectRequired: err.code === 'GOOGLE_RECONNECT_REQUIRED'
-              || err.code === 'GOOGLE_FORBIDDEN',
+            reconnectRequired: err.code === 'GOOGLE_RECONNECT_REQUIRED',
             errorCode: err.code,
             errorMessage: err.message,
             googleStatus: err.googleStatus ?? null,
@@ -443,6 +456,7 @@ export async function integrationRoutes(
       const tokens = await exchangeGoogleCode(deps.config, q.code);
       const googleIdentity = await fetchGoogleAccountIdentity(tokens.access_token);
       if (!googleIdentity) {
+        app.log.warn({ userId, event: 'oauth.callback' }, 'google identity missing from access token');
         return redirectOrHtml('error', 'account_mismatch');
       }
 
@@ -450,12 +464,55 @@ export async function integrationRoutes(
       if (!user) {
         return redirectOrHtml('error', 'invalid_state');
       }
+      const accountMatch = googleIdentity.sub === user.googleSub;
       // GOOGLE_ACCOUNT_MISMATCH — signed-in Personal OS user must match Google account.
-      if (googleIdentity.sub !== user.googleSub) {
+      if (!accountMatch) {
+        app.log.warn({
+          event: 'oauth.callback',
+          userId,
+          accountMatch: false,
+          hasAccessToken: Boolean(tokens.access_token),
+          hasRefreshToken: Boolean(tokens.refresh_token),
+          scopeCount: tokens.scope?.split(/\s+/).filter(Boolean).length ?? 0,
+          status: 'account_mismatch',
+          errorCode: 'GOOGLE_ACCOUNT_MISMATCH',
+        }, 'calendar oauth account mismatch');
         return redirectOrHtml('error', 'account_mismatch');
       }
 
-      await deps.tokenService.saveGoogleCalendarTokens(userId, {
+      const existing = await deps.tokenService.getGoogleCalendarTokens(userId);
+      const effectiveRefresh = tokens.refresh_token?.trim() || existing?.refreshToken || null;
+      if (!effectiveRefresh) {
+        app.log.warn({
+          event: 'oauth.callback',
+          userId,
+          accountMatch: true,
+          hasAccessToken: Boolean(tokens.access_token),
+          hasRefreshToken: false,
+          scopeCount: tokens.scope?.split(/\s+/).filter(Boolean).length ?? 0,
+          writeCalendarResolved: false,
+          status: 'missing_refresh_token',
+          errorCode: 'MISSING_REFRESH_TOKEN',
+        }, 'calendar oauth missing refresh_token');
+        return redirectOrHtml('error', 'missing_refresh_token');
+      }
+
+      if (tokens.scope && !googleScopesSatisfied(tokens.scope)) {
+        app.log.warn({
+          event: 'oauth.callback',
+          userId,
+          accountMatch: true,
+          hasAccessToken: true,
+          hasRefreshToken: true,
+          scopeCount: tokens.scope.split(/\s+/).filter(Boolean).length,
+          writeCalendarResolved: false,
+          status: 'insufficient_scopes',
+          errorCode: 'GOOGLE_FORBIDDEN',
+        }, 'calendar oauth missing required scopes');
+        return redirectOrHtml('error', 'insufficient_scopes');
+      }
+
+      const saved = await deps.tokenService.saveGoogleCalendarTokens(userId, {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token ?? null,
         expiresAt: tokens.expires_in
@@ -464,8 +521,62 @@ export async function integrationRoutes(
         scopes: tokens.scope ?? null,
         googleAccountSub: googleIdentity.sub,
         googleAccountEmail: googleIdentity.email,
+        status: 'connected',
+        lastErrorCode: null,
       });
       clearSyncError(userId);
+
+      let writeCalendarResolved = false;
+      try {
+        const provider = await createUserCalendarProviderAsync({
+          userId,
+          tokenService: deps.tokenService,
+          config: deps.config,
+        });
+        if (provider.listCosEvents) {
+          const now = Date.now();
+          await provider.listCosEvents(now, now + 60_000);
+          writeCalendarResolved = true;
+        }
+      } catch (writeErr) {
+        const code = isGoogleCalendarError(writeErr) ? writeErr.code : 'WRITE_CALENDAR_FAILED';
+        app.log.warn({
+          event: 'oauth.callback',
+          userId,
+          accountMatch: true,
+          hasAccessToken: true,
+          hasRefreshToken: saved.hasRefreshToken,
+          preservedRefreshToken: saved.preservedRefreshToken,
+          scopeCount: tokens.scope?.split(/\s+/).filter(Boolean).length ?? 0,
+          writeCalendarResolved: false,
+          status: 'write_calendar_failed',
+          errorCode: code,
+        }, 'write calendar resolve failed after oauth');
+        // Tokens are durable; do not redirect as connected-success if write calendar cannot be created.
+        if (code === 'GOOGLE_FORBIDDEN') {
+          return redirectOrHtml('error', 'insufficient_scopes');
+        }
+        return redirectOrHtml('error', 'write_calendar_failed');
+      }
+
+      const status = await deps.tokenService.getPublicStatus(userId);
+      app.log.info({
+        event: 'oauth.callback',
+        userId,
+        accountMatch: true,
+        hasAccessToken: true,
+        hasRefreshToken: saved.hasRefreshToken,
+        preservedRefreshToken: saved.preservedRefreshToken,
+        tokenExpiryPresent: Boolean(tokens.expires_in),
+        scopeCount: tokens.scope?.split(/\s+/).filter(Boolean).length ?? 0,
+        writeCalendarResolved,
+        writeCalendarIdPresent: Boolean(status.writeCalendarId),
+        connected: status.connected,
+        healthy: status.healthy,
+        reconnectRequired: status.reconnectRequired,
+        status: 'connected',
+        errorCode: null,
+      }, 'calendar oauth callback success');
 
       if (webReturnConfigured) {
         return redirectOrHtml('success');
@@ -478,7 +589,7 @@ export async function integrationRoutes(
 </body></html>`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      app.log.error({ err }, 'oauth-callback failed');
+      app.log.error({ err, event: 'oauth.callback', userId, status: 'token_exchange_failed' }, 'oauth-callback failed');
       if (webReturnConfigured) {
         return redirectOrHtml('error', 'token_exchange_failed');
       }
