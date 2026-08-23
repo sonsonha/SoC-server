@@ -61,19 +61,10 @@ export class OAuthConnectionStateService {
   }
 }
 
-/** Fetch Google account identity from an access token (requires openid). */
-export async function fetchGoogleAccountIdentity(accessToken: string): Promise<{
-  sub: string;
-  email: string;
-} | null> {
-  const res = await fetch('https://openidconnect.googleapis.com/userinfo', {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok) {
-    console.error('google.userinfo failed', { googleStatus: res.status });
-    return null;
-  }
-  const body = (await res.json()) as { sub?: string; email?: string };
-  if (!body.sub || !body.email) return null;
-  return { sub: body.sub, email: body.email };
-}
+/** @deprecated Prefer resolveCalendarGoogleIdentity — kept for callers/tests. */
+export {
+  fetchGoogleAccountIdentity,
+  resolveCalendarGoogleIdentity,
+  assertSameGoogleAccount,
+  googleSubFingerprint,
+} from './googleAccountIdentity.js';

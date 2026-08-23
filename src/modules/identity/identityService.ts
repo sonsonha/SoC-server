@@ -87,13 +87,13 @@ export class IdentityService {
   }
 
   async upsertGoogleUser(identity: VerifiedGoogleIdentity): Promise<SessionUser> {
-    const existing = await this.db
+    const existingBySub = await this.db
       .select()
       .from(users)
       .where(eq(users.googleSub, identity.sub))
       .limit(1);
     const now = new Date();
-    if (existing[0]) {
+    if (existingBySub[0]) {
       await this.db
         .update(users)
         .set({
@@ -103,11 +103,39 @@ export class IdentityService {
           lastLoginAt: now,
           updatedAt: now,
         })
-        .where(eq(users.id, existing[0].id));
+        .where(eq(users.id, existingBySub[0].id));
       const refreshed = await this.db
         .select()
         .from(users)
-        .where(eq(users.id, existing[0].id))
+        .where(eq(users.id, existingBySub[0].id))
+        .limit(1);
+      const row = refreshed[0]!;
+      return { ...toPublic(row), googleSub: row.googleSub };
+    }
+
+    // Same verified email, different/stale google_sub — upgrade in place.
+    // Do not insert a second users row for the same person.
+    const emailNorm = identity.email.trim().toLowerCase();
+    const allUsers = await this.db.select().from(users);
+    const existingByEmail = allUsers.find(
+      (u) => u.email.trim().toLowerCase() === emailNorm,
+    );
+    if (existingByEmail) {
+      await this.db
+        .update(users)
+        .set({
+          googleSub: identity.sub,
+          email: identity.email,
+          name: identity.name,
+          avatarUrl: identity.picture,
+          lastLoginAt: now,
+          updatedAt: now,
+        })
+        .where(eq(users.id, existingByEmail.id));
+      const refreshed = await this.db
+        .select()
+        .from(users)
+        .where(eq(users.id, existingByEmail.id))
         .limit(1);
       const row = refreshed[0]!;
       return { ...toPublic(row), googleSub: row.googleSub };

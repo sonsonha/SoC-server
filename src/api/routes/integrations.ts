@@ -19,8 +19,12 @@ import {
 } from '../../infrastructure/providers/calendar/googleErrors.js';
 import {
   OAuthConnectionStateService,
-  fetchGoogleAccountIdentity,
 } from '../../modules/integrations/oauthConnectionState.js';
+import {
+  assertSameGoogleAccount,
+  googleSubFingerprint,
+  resolveCalendarGoogleIdentity,
+} from '../../modules/integrations/googleAccountIdentity.js';
 import { createUserCalendarProviderAsync } from '../../modules/integrations/userCalendarProvider.js';
 import {
   oauthErrorRedirectUrl,
@@ -139,6 +143,7 @@ async function exchangeGoogleCode(
   refresh_token?: string;
   expires_in?: number;
   scope?: string;
+  id_token?: string;
 }> {
   const redirect = defaultRedirectUri(config);
   const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -161,6 +166,7 @@ async function exchangeGoogleCode(
     refresh_token?: string;
     expires_in?: number;
     scope?: string;
+    id_token?: string;
   };
 }
 
@@ -474,31 +480,52 @@ export async function integrationRoutes(
 
     try {
       const tokens = await exchangeGoogleCode(deps.config, q.code);
-      const googleIdentity = await fetchGoogleAccountIdentity(tokens.access_token);
+      const googleIdentity = await resolveCalendarGoogleIdentity({
+        accessToken: tokens.access_token,
+        idToken: tokens.id_token,
+        calendarOAuthClientId: deps.config.GOOGLE_OAUTH_CLIENT_ID!,
+      });
       if (!googleIdentity) {
         app.log.warn({
           event: 'oauth.callback',
           userId,
           tokenExchange: true,
           hasAccessToken: Boolean(tokens.access_token),
+          hasIdToken: Boolean(tokens.id_token),
           hasRefreshToken: Boolean(tokens.refresh_token),
           googleSubObtained: false,
-          status: 'account_mismatch',
-          errorCode: 'GOOGLE_ACCOUNT_MISMATCH',
-        }, 'google identity missing from access token');
-        return redirectOrHtml('error', 'account_mismatch');
+          status: 'identity_unavailable',
+          errorCode: 'CALENDAR_IDENTITY_UNAVAILABLE',
+        }, 'calendar oauth could not resolve Google account identity');
+        // Do NOT map this to account_mismatch — identity was never obtained.
+        return redirectOrHtml('error', 'identity_unavailable');
       }
 
       const user = await deps.identity.getUserById(userId);
       if (!user) {
         return redirectOrHtml('error', 'invalid_state');
       }
-      const accountMatch = googleIdentity.sub === user.googleSub;
-      // GOOGLE_ACCOUNT_MISMATCH — signed-in Personal OS user must match Google account.
-      if (!accountMatch) {
+      const match = assertSameGoogleAccount({
+        personalOsSub: user.googleSub,
+        calendarSub: googleIdentity.sub,
+      });
+      const loginFp = googleSubFingerprint(user.googleSub);
+      const calendarFp = googleSubFingerprint(googleIdentity.sub);
+      // GOOGLE_ACCOUNT_MISMATCH — signed-in Personal OS user must match Google account (sub).
+      if (!match.ok) {
         app.log.warn({
           event: 'oauth.callback',
           userId,
+          loginEmail: user.email,
+          calendarEmail: googleIdentity.email,
+          emailsEqual:
+            user.email.trim().toLowerCase() === googleIdentity.email.trim().toLowerCase(),
+          loginSubPresent: loginFp.present,
+          calendarSubPresent: calendarFp.present,
+          loginSubFingerprint: loginFp,
+          calendarSubFingerprint: calendarFp,
+          subEqual: false,
+          identitySource: googleIdentity.source,
           personalOsGoogleSubPresent: Boolean(user.googleSub),
           googleSubObtained: true,
           accountMatch: false,
@@ -510,6 +537,20 @@ export async function integrationRoutes(
         }, 'calendar oauth account mismatch');
         return redirectOrHtml('error', 'account_mismatch');
       }
+
+      app.log.info({
+        event: 'oauth.callback',
+        userId,
+        loginEmail: user.email,
+        calendarEmail: googleIdentity.email,
+        emailsEqual: true,
+        loginSubFingerprint: loginFp,
+        calendarSubFingerprint: calendarFp,
+        subEqual: true,
+        identitySource: googleIdentity.source,
+        accountMatch: true,
+        status: 'account_match',
+      }, 'calendar oauth account matched');
 
       // Orphan/legacy repair is ONLY for the explicit initial owner — never User B.
       const isInitialOwner = deps.identity.isLegacyCalendarOwner(user.email);
@@ -771,7 +812,11 @@ export async function integrationRoutes(
     if (body.code && deps.config.GOOGLE_OAUTH_CLIENT_ID && deps.config.GOOGLE_OAUTH_CLIENT_SECRET) {
       try {
         const tokens = await exchangeGoogleCode(deps.config, body.code);
-        const googleIdentity = await fetchGoogleAccountIdentity(tokens.access_token);
+        const googleIdentity = await resolveCalendarGoogleIdentity({
+          accessToken: tokens.access_token,
+          idToken: tokens.id_token,
+          calendarOAuthClientId: deps.config.GOOGLE_OAUTH_CLIENT_ID!,
+        });
         await deps.tokenService.saveGoogleCalendarTokens(
           owner.id,
           {
