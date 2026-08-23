@@ -511,8 +511,13 @@ export async function integrationRoutes(
         return redirectOrHtml('error', 'account_mismatch');
       }
 
+      // Orphan/legacy repair is ONLY for the explicit initial owner — never User B.
+      const isInitialOwner = deps.identity.isLegacyCalendarOwner(user.email);
       const existing = await deps.tokenService.getGoogleCalendarTokens(userId);
-      const orphan = existing ? null : await deps.tokenService.getOrphanGoogleCalendarTokens();
+      const orphan =
+        !existing && isInitialOwner
+          ? await deps.tokenService.getOrphanGoogleCalendarTokens()
+          : null;
       const effectiveRefresh =
         tokens.refresh_token?.trim()
         || existing?.refreshToken
@@ -527,6 +532,7 @@ export async function integrationRoutes(
           hasAccessToken: Boolean(tokens.access_token),
           hasRefreshToken: false,
           orphanRefreshAvailable: false,
+          isInitialOwner,
           scopeCount: tokens.scope?.split(/\s+/).filter(Boolean).length ?? 0,
           writeCalendarResolved: false,
           upsertAttempted: false,
@@ -558,18 +564,22 @@ export async function integrationRoutes(
         claimedOrphan: boolean;
       };
       try {
-        saved = await deps.tokenService.saveGoogleCalendarTokens(userId, {
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token ?? null,
-          expiresAt: tokens.expires_in
-            ? new Date(Date.now() + tokens.expires_in * 1000)
-            : null,
-          scopes: tokens.scope ?? null,
-          googleAccountSub: googleIdentity.sub,
-          googleAccountEmail: googleIdentity.email,
-          status: 'connected',
-          lastErrorCode: null,
-        });
+        saved = await deps.tokenService.saveGoogleCalendarTokens(
+          userId,
+          {
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token ?? null,
+            expiresAt: tokens.expires_in
+              ? new Date(Date.now() + tokens.expires_in * 1000)
+              : null,
+            scopes: tokens.scope ?? null,
+            googleAccountSub: googleIdentity.sub,
+            googleAccountEmail: googleIdentity.email,
+            status: 'connected',
+            lastErrorCode: null,
+          },
+          { allowOrphanClaim: isInitialOwner },
+        );
       } catch (upsertErr) {
         const message = upsertErr instanceof Error ? upsertErr.message : String(upsertErr);
         app.log.error({
@@ -610,6 +620,8 @@ export async function integrationRoutes(
           userId,
           tokenService: deps.tokenService,
           config: deps.config,
+          // Never inject GOOGLE_COS_CALENDAR_ID for second users.
+          allowLegacyCosCalendarFallback: isInitialOwner,
         });
         if (provider.listCosEvents) {
           const now = Date.now();
@@ -714,14 +726,18 @@ export async function integrationRoutes(
           redirectUri: result.redirectUri,
         });
       }
-      await deps.tokenService.saveGoogleCalendarTokens(owner.id, {
-        accessToken: 'fake-access-token',
-        refreshToken: 'fake-refresh-token',
-        expiresAt: new Date(Date.now() + 86400_000),
-        scopes: 'fake',
-        googleAccountSub: owner.googleSub,
-        googleAccountEmail: owner.email,
-      });
+      await deps.tokenService.saveGoogleCalendarTokens(
+        owner.id,
+        {
+          accessToken: 'fake-access-token',
+          refreshToken: 'fake-refresh-token',
+          expiresAt: new Date(Date.now() + 86400_000),
+          scopes: 'fake',
+          googleAccountSub: owner.googleSub,
+          googleAccountEmail: owner.email,
+        },
+        { allowOrphanClaim: true },
+      );
       clearSyncError(owner.id);
       return reply.send({ connected: true, provider: 'google_calendar', mode: 'fake' });
     }
@@ -736,14 +752,18 @@ export async function integrationRoutes(
     }
 
     if (body.accessToken) {
-      await deps.tokenService.saveGoogleCalendarTokens(owner.id, {
-        accessToken: body.accessToken,
-        refreshToken: body.refreshToken ?? null,
-        expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
-        scopes: 'manual',
-        googleAccountSub: owner.googleSub,
-        googleAccountEmail: owner.email,
-      });
+      await deps.tokenService.saveGoogleCalendarTokens(
+        owner.id,
+        {
+          accessToken: body.accessToken,
+          refreshToken: body.refreshToken ?? null,
+          expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
+          scopes: 'manual',
+          googleAccountSub: owner.googleSub,
+          googleAccountEmail: owner.email,
+        },
+        { allowOrphanClaim: true },
+      );
       clearSyncError(owner.id);
       return reply.send({ connected: true, provider: 'google_calendar', mode: 'token' });
     }
@@ -752,16 +772,20 @@ export async function integrationRoutes(
       try {
         const tokens = await exchangeGoogleCode(deps.config, body.code);
         const googleIdentity = await fetchGoogleAccountIdentity(tokens.access_token);
-        await deps.tokenService.saveGoogleCalendarTokens(owner.id, {
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token ?? null,
-          expiresAt: tokens.expires_in
-            ? new Date(Date.now() + tokens.expires_in * 1000)
-            : null,
-          scopes: tokens.scope ?? null,
-          googleAccountSub: googleIdentity?.sub ?? owner.googleSub,
-          googleAccountEmail: googleIdentity?.email ?? owner.email,
-        });
+        await deps.tokenService.saveGoogleCalendarTokens(
+          owner.id,
+          {
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token ?? null,
+            expiresAt: tokens.expires_in
+              ? new Date(Date.now() + tokens.expires_in * 1000)
+              : null,
+            scopes: tokens.scope ?? null,
+            googleAccountSub: googleIdentity?.sub ?? owner.googleSub,
+            googleAccountEmail: googleIdentity?.email ?? owner.email,
+          },
+          { allowOrphanClaim: true },
+        );
         clearSyncError(owner.id);
         return reply.send({ connected: true, provider: 'google_calendar', mode: 'oauth' });
       } catch (err) {

@@ -167,11 +167,16 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   const sharedFakeCalendar = new FakeCalendarProvider();
   const resolveUserCalendar = async (userId: string): Promise<CalendarProvider> => {
     if (deps.calendarProvider) return deps.calendarProvider;
+    const user = await identityService.getUserById(userId);
+    const allowLegacyCosCalendarFallback = user
+      ? identityService.isLegacyCalendarOwner(user.email)
+      : false;
     return createUserCalendarProviderAsync({
       userId,
       tokenService,
       config: deps.config,
       fake: sharedFakeCalendar,
+      allowLegacyCosCalendarFallback,
     });
   };
 

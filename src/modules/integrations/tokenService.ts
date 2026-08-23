@@ -72,6 +72,7 @@ export class IntegrationTokenService {
   /**
    * Legacy singleton left by incomplete Batch C backfill (`user_id` NULL).
    * Only when exactly one such row exists.
+   * Callers must gate claim/reuse to the explicit initial owner — never User B.
    */
   async getOrphanGoogleCalendarTokens(): Promise<StoredTokens | null> {
     const rows = await this.db
@@ -102,6 +103,13 @@ export class IntegrationTokenService {
       status?: string;
       lastErrorCode?: string | null;
     },
+    opts?: {
+      /**
+       * Claim a NULL user_id singleton row. ONLY for PERSONAL_OS_INITIAL_OWNER.
+       * Brand-new users must INSERT their own row.
+       */
+      allowOrphanClaim?: boolean;
+    },
   ): Promise<{
     preservedRefreshToken: boolean;
     hasRefreshToken: boolean;
@@ -122,7 +130,7 @@ export class IntegrationTokenService {
 
     let target = existing[0];
     let claimedOrphan = false;
-    if (!target) {
+    if (!target && opts?.allowOrphanClaim) {
       const orphans = await this.db
         .select()
         .from(integrationTokens)

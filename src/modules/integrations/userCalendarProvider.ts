@@ -10,6 +10,9 @@ import type { IntegrationTokenService } from './tokenService.js';
 /**
  * Build a CalendarProvider scoped to one Personal OS user.
  * Tokens, write calendar, and refresh are always user-bound.
+ *
+ * Never inject GOOGLE_COS_CALENDAR_ID here — that legacy env calendar is owner-only
+ * and must be opted in via createUserCalendarProviderAsync({ allowLegacyCosCalendarFallback }).
  */
 export function createUserCalendarProvider(deps: {
   userId: string;
@@ -22,10 +25,6 @@ export function createUserCalendarProvider(deps: {
   if (config.USE_FAKE_PROVIDERS || !config.GOOGLE_OAUTH_CLIENT_ID) {
     return fake ?? new FakeCalendarProvider();
   }
-
-  // Legacy env write calendar only as initial fallback when row has no writeCalendarId yet
-  // (owner migration). New users resolve/create their own Personal OS calendar.
-  const legacyWriteFallback = config.GOOGLE_COS_CALENDAR_ID;
 
   return new GoogleCalendarProvider(
     async () => {
@@ -50,7 +49,7 @@ export function createUserCalendarProvider(deps: {
       };
     },
     {
-      writeCalendarId: undefined, // loaded async below via first call path
+      writeCalendarId: undefined,
       extraReadCalendarIds: parseConfiguredReadCalendarIds(config.GOOGLE_READ_CALENDAR_IDS),
       onWriteCalendarResolved: async (calendarId) => {
         await tokenService.setWriteCalendarId(userId, calendarId);
@@ -65,13 +64,21 @@ export async function createUserCalendarProviderAsync(deps: {
   tokenService: IntegrationTokenService;
   config: AppConfig;
   fake?: FakeCalendarProvider;
+  /**
+   * ONLY for PERSONAL_OS_INITIAL_OWNER_EMAIL.
+   * Second users must find/create their own Personal OS Google calendar.
+   */
+  allowLegacyCosCalendarFallback?: boolean;
 }): Promise<CalendarProvider> {
   const { userId, tokenService, config, fake } = deps;
   if (config.USE_FAKE_PROVIDERS || !config.GOOGLE_OAUTH_CLIENT_ID) {
     return fake ?? new FakeCalendarProvider();
   }
   const stored = await tokenService.getGoogleCalendarTokens(userId);
-  const writeCalendarId = stored?.writeCalendarId ?? config.GOOGLE_COS_CALENDAR_ID ?? null;
+  const legacyFallback = deps.allowLegacyCosCalendarFallback
+    ? (config.GOOGLE_COS_CALENDAR_ID ?? null)
+    : null;
+  const writeCalendarId = stored?.writeCalendarId ?? legacyFallback;
   return new GoogleCalendarProvider(
     async () => {
       const t = await tokenService.getGoogleCalendarTokens(userId);
