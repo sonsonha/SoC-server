@@ -1,8 +1,14 @@
-import { bigint, boolean, integer, pgTable, real, text } from 'drizzle-orm/pg-core';
+import { bigint, boolean, index, integer, pgTable, real, text } from 'drizzle-orm/pg-core';
 import { syncColumns } from './syncColumns.js';
+import { users } from './identity.js';
 
-export const tasks = pgTable('tasks', {
+export const tasks = pgTable(
+  'tasks',
+  {
   id: text('id').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'restrict' }),
   title: text('title').notNull(),
   description: text('description').notNull().default(''),
   projectId: text('project_id'),
@@ -29,4 +35,11 @@ export const tasks = pgTable('tasks', {
   isAnchorCandidate: boolean('is_anchor_candidate').notNull().default(false),
   estimateBiasFactor: real('estimate_bias_factor').notNull().default(1),
   ...syncColumns,
-});
+  },
+  (t) => [
+    index('tasks_user_id_idx').on(t.userId),
+    index('tasks_user_id_status_idx').on(t.userId, t.status),
+    index('tasks_user_id_project_id_idx').on(t.userId, t.projectId),
+    index('tasks_user_id_goal_id_idx').on(t.userId, t.goalId),
+  ],
+);

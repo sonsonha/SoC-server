@@ -1,12 +1,18 @@
-import { bigint, integer, pgTable, text } from 'drizzle-orm/pg-core';
+import { bigint, index, integer, pgTable, text } from 'drizzle-orm/pg-core';
 import { syncColumns } from './syncColumns.js';
+import { users } from './identity.js';
 
 /**
  * A user-owned allocation of time. Tasks remain the source of truth for work;
  * time blocks are the bridge between the planner and Google Calendar.
  */
-export const timeBlocks = pgTable('time_blocks', {
+export const timeBlocks = pgTable(
+  'time_blocks',
+  {
   id: text('id').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'restrict' }),
   taskId: text('task_id'),
   projectId: text('project_id'),
   title: text('title').notNull(),
@@ -22,4 +28,10 @@ export const timeBlocks = pgTable('time_blocks', {
   reminderMinutes: integer('reminder_minutes'),
   recurrenceRule: text('recurrence_rule'),
   ...syncColumns,
-});
+  },
+  (t) => [
+    index('time_blocks_user_id_idx').on(t.userId),
+    index('time_blocks_user_id_task_id_idx').on(t.userId, t.taskId),
+    index('time_blocks_user_id_start_idx').on(t.userId, t.startEpochMs),
+  ],
+);

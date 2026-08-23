@@ -24,7 +24,8 @@ export { goals } from './goals.js';
 export { skillLevels, profileStatus } from './profile.js';
 export { learningTracks } from './learningTracks.js';
 export { deviceFcmTokens, notificationLog, proactiveScanRuns } from './notifications.js';
-export { integrationTokens, calendarCommitments, calendarSyncState } from './integrations.js';
+export { integrationTokens, calendarCommitments, calendarSyncState, oauthConnectionStates } from './integrations.js';
+export { users, authSessions } from './identity.js';
 export {
   weeklyPlans,
   weeklyOutcomes,

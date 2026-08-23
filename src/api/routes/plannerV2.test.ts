@@ -2,7 +2,26 @@ import Fastify from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 import type { DeviceService } from '../../application/deviceService.js';
 import type { PlannerV2Service } from '../../application/plannerV2Service.js';
+import type { IdentityService, SessionUser } from '../../modules/identity/identityService.js';
 import { plannerV2Routes } from './plannerV2.js';
+
+const testUser: SessionUser = {
+  id: 'user-a',
+  email: 'owner@example.com',
+  name: 'Owner',
+  avatarUrl: null,
+  googleSub: 'sub-a',
+};
+
+function mockIdentity(user: SessionUser = testUser): IdentityService {
+  return {
+    resolveSession: vi.fn().mockResolvedValue(user),
+    isAllowlisted: () => true,
+    resolveInitialOwnerUser: vi.fn().mockResolvedValue(user),
+    isLegacyCalendarOwner: () => true,
+    getInitialOwnerEmail: () => user.email,
+  } as unknown as IdentityService;
+}
 
 async function plannerApp(planner: Partial<PlannerV2Service>) {
   const app = Fastify();
@@ -10,12 +29,17 @@ async function plannerApp(planner: Partial<PlannerV2Service>) {
     planner: planner as PlannerV2Service,
     deviceService: {} as DeviceService,
     webToken: 'planner-test-token',
+    identity: mockIdentity(),
+    initialOwnerEmail: testUser.email,
   });
   await app.ready();
   return app;
 }
 
-const authorization = { authorization: 'Bearer planner-test-token' };
+const authorization = {
+  authorization: 'Bearer planner-test-token',
+  cookie: 'pos_session=test-session',
+};
 
 describe('Planner V2 task management routes', () => {
   it('returns every active time block linked to a task', async () => {
@@ -34,7 +58,7 @@ describe('Planner V2 task management routes', () => {
     expect(response.json()).toEqual([
       { id: 'block-1', taskId: 'task-1', title: 'Deep work' },
     ]);
-    expect(getTaskTimeBlocks).toHaveBeenCalledWith('task-1');
+    expect(getTaskTimeBlocks).toHaveBeenCalledWith('user-a', 'task-1');
     await app.close();
   });
 
@@ -58,7 +82,7 @@ describe('Planner V2 task management routes', () => {
       deleted: true,
       removedTimeBlocks: 2,
     });
-    expect(deleteTask).toHaveBeenCalledWith('task-1');
+    expect(deleteTask).toHaveBeenCalledWith('user-a', 'task-1');
     await app.close();
   });
 });
@@ -83,7 +107,7 @@ describe('Planner V2 projects and goals routes', () => {
 
     expect(response.statusCode).toBe(201);
     expect(response.json()).toMatchObject({ id: 'project-1', title: 'Personal OS' });
-    expect(createProject).toHaveBeenCalledWith({ title: 'Personal OS' });
+    expect(createProject).toHaveBeenCalledWith('user-a', { title: 'Personal OS' });
     await app.close();
   });
 
@@ -99,7 +123,7 @@ describe('Planner V2 projects and goals routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ id: 'goal-1', deleted: true });
-    expect(deleteGoal).toHaveBeenCalledWith('goal-1');
+    expect(deleteGoal).toHaveBeenCalledWith('user-a', 'goal-1');
     await app.close();
   });
 });

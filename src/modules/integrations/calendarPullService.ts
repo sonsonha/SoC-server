@@ -72,14 +72,18 @@ export function plannerBlockReconciliation(
 export class CalendarPullService {
   constructor(
     private readonly db: Db,
-    private readonly calendar: CalendarProvider,
+    private readonly resolveCalendar: (userId: string) => Promise<CalendarProvider>,
     private readonly jobs: JobQueue,
     private readonly notifications: NotificationService | null = null,
-    private readonly isConnected: () => Promise<boolean> = async () => true,
+    private readonly isConnected: (userId: string) => Promise<boolean> = async () => true,
   ) {}
 
-  async pull(opts?: { fromEpochMs?: number; toEpochMs?: number }): Promise<CalendarPullSummary> {
-    const connected = await this.isConnected();
+  async pull(
+    userId: string,
+    opts?: { fromEpochMs?: number; toEpochMs?: number },
+  ): Promise<CalendarPullSummary> {
+    const calendar = await this.resolveCalendar(userId);
+    const connected = await this.isConnected(userId);
     const now = Date.now();
     const fromEpochMs = opts?.fromEpochMs ?? now - 86_400_000;
     const toEpochMs = opts?.toEpochMs ?? now + HORIZON_DAYS * 86_400_000;
@@ -103,12 +107,12 @@ export class CalendarPullService {
     let primaryEvents: CalendarEvent[] = [];
     let cosEvents: CalendarEvent[] = [];
     let pullError: GoogleCalendarError | null = null;
-    let cosListOk = !this.calendar.listCosEvents;
+    let cosListOk = !calendar.listCosEvents;
 
     const primaryResult = await Promise.allSettled([
-      this.calendar.listEvents(fromEpochMs, toEpochMs),
-      this.calendar.listCosEvents
-        ? this.calendar.listCosEvents(fromEpochMs, toEpochMs)
+      calendar.listEvents(fromEpochMs, toEpochMs),
+      calendar.listCosEvents
+        ? calendar.listCosEvents(fromEpochMs, toEpochMs)
         : Promise.resolve([] as CalendarEvent[]),
     ]);
 
@@ -127,7 +131,7 @@ export class CalendarPullService {
       }
     }
 
-    if (!this.calendar.listCosEvents) {
+    if (!calendar.listCosEvents) {
       cosListOk = true;
     } else if (primaryResult[1].status === 'fulfilled') {
       cosEvents = primaryResult[1].value;
@@ -175,6 +179,7 @@ export class CalendarPullService {
       .from(timeBlocks)
       .where(
         and(
+          eq(timeBlocks.userId, userId),
           isNull(timeBlocks.deletedAt),
           lt(timeBlocks.startEpochMs, toEpochMs),
           gt(timeBlocks.endEpochMs, fromEpochMs),
@@ -200,9 +205,11 @@ export class CalendarPullService {
     const existing = await this.db
       .select()
       .from(calendarCommitments)
-      .where(isNull(calendarCommitments.deletedAt));
+      .where(and(eq(calendarCommitments.userId, userId), isNull(calendarCommitments.deletedAt)));
 
-    const byExternal = new Map(existing.map((r) => [r.externalCalendarEventId, r]));
+    const byExternal = new Map(
+      existing.map((r) => [`${r.calendarId}:${r.externalCalendarEventId}`, r]),
+    );
     const seen = new Set<string>();
     let upserted = 0;
     let ownedUpdated = 0;
@@ -214,7 +221,7 @@ export class CalendarPullService {
     // reconcile back to the local source of truth instead of being imported as
     // duplicate locked EXTERNAL commitments.
     // Skip when Cos list failed — an empty Cos result must not soft-delete local blocks.
-    if (this.calendar.listCosEvents && cosListOk) {
+    if (calendar.listCosEvents && cosListOk) {
       for (const row of plannerOwnedRows) {
         const event =
           (row.googleEventId ? allEventsById.get(row.googleEventId) : undefined) ??
@@ -272,9 +279,10 @@ export class CalendarPullService {
     }
 
     for (const event of events) {
-      seen.add(event.eventId);
-      const prev = byExternal.get(event.eventId);
-      const id = prev?.id ?? `cal-${event.eventId}`;
+      const calKey = `${event.calendarId ?? 'primary'}:${event.eventId}`;
+      seen.add(calKey);
+      const prev = byExternal.get(calKey);
+      const id = prev?.id ?? `cal-${userId.slice(0, 8)}-${event.eventId}`;
       const changed =
         !prev ||
         prev.title !== event.title ||
@@ -285,6 +293,7 @@ export class CalendarPullService {
         .insert(calendarCommitments)
         .values({
           id,
+          userId,
           externalCalendarEventId: event.eventId,
           title: event.title,
           startEpochMs: event.startEpochMs,
@@ -329,7 +338,7 @@ export class CalendarPullService {
 
     let removed = 0;
     for (const row of existing) {
-      if (seen.has(row.externalCalendarEventId)) continue;
+      if (seen.has(`${row.calendarId}:${row.externalCalendarEventId}`)) continue;
       if (row.startEpochMs > toEpochMs || row.endEpochMs < fromEpochMs) continue;
       await this.db
         .update(calendarCommitments)
@@ -343,7 +352,11 @@ export class CalendarPullService {
 
     const replannedDates: string[] = [];
     if (materialChange) {
-      const stateRows = await this.db.select().from(calendarSyncState).limit(1);
+      const stateRows = await this.db
+        .select()
+        .from(calendarSyncState)
+        .where(eq(calendarSyncState.userId, userId))
+        .limit(1);
       const lastReplan = stateRows[0]?.lastReplanAt?.getTime() ?? 0;
       if (Date.now() - lastReplan >= REPLAN_DEBOUNCE_MS) {
         for (const date of touchedDates) {
@@ -359,7 +372,8 @@ export class CalendarPullService {
         await this.db
           .insert(calendarSyncState)
           .values({
-            id: 'default',
+            id: userId,
+            userId,
             lastSyncAt: new Date(),
             lastReplanAt: new Date(),
             updatedAt: new Date(),
@@ -367,6 +381,7 @@ export class CalendarPullService {
           .onConflictDoUpdate({
             target: calendarSyncState.id,
             set: {
+              userId,
               lastSyncAt: new Date(),
               lastReplanAt: new Date(),
               updatedAt: new Date(),
@@ -383,10 +398,10 @@ export class CalendarPullService {
           });
         }
       } else {
-        await this.touchSyncState();
+        await this.touchSyncState(userId);
       }
     } else {
-      await this.touchSyncState();
+      await this.touchSyncState(userId);
     }
 
     return {
@@ -405,11 +420,11 @@ export class CalendarPullService {
     };
   }
 
-  async listStoredEvents(fromEpochMs: number, toEpochMs: number) {
+  async listStoredEvents(userId: string, fromEpochMs: number, toEpochMs: number) {
     const rows = await this.db
       .select()
       .from(calendarCommitments)
-      .where(isNull(calendarCommitments.deletedAt));
+      .where(and(eq(calendarCommitments.userId, userId), isNull(calendarCommitments.deletedAt)));
     return rows
       .filter((r) => r.startEpochMs < toEpochMs && r.endEpochMs > fromEpochMs)
       .map((r) => ({
@@ -422,14 +437,32 @@ export class CalendarPullService {
       }));
   }
 
-  private async touchSyncState(): Promise<void> {
+  private async touchSyncState(userId: string): Promise<void> {
     await this.db
       .insert(calendarSyncState)
-      .values({ id: 'default', lastSyncAt: new Date(), updatedAt: new Date() })
+      .values({ id: userId, userId, lastSyncAt: new Date(), updatedAt: new Date() })
       .onConflictDoUpdate({
         target: calendarSyncState.id,
-        set: { lastSyncAt: new Date(), updatedAt: new Date() },
+        set: { userId, lastSyncAt: new Date(), updatedAt: new Date() },
       });
+  }
+
+  /** Soft-delete EXTERNAL commitments for disconnect (does not delete Google remotely). */
+  async clearExternalCommitments(userId: string): Promise<number> {
+    const rows = await this.db
+      .select({ id: calendarCommitments.id })
+      .from(calendarCommitments)
+      .where(and(eq(calendarCommitments.userId, userId), isNull(calendarCommitments.deletedAt)));
+    const now = new Date();
+    for (const row of rows) {
+      await this.db
+        .update(calendarCommitments)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(eq(calendarCommitments.id, row.id));
+      await this.softDeleteExternalBlocks(row.id);
+    }
+    await this.db.delete(calendarSyncState).where(eq(calendarSyncState.userId, userId));
+    return rows.length;
   }
 
   private async ensureDailyPlan(date: string): Promise<string> {

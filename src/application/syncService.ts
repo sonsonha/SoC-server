@@ -1,5 +1,6 @@
-import { eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull } from 'drizzle-orm';
 import type { Db } from '../infrastructure/db/client.js';
+import { resolveLegacyPlannerOwnerUserId } from '../modules/identity/legacyPlannerOwner.js';
 import {
   clientMutations,
   dailyPlans,
@@ -66,6 +67,7 @@ export class SyncService {
   async pull(deviceId: string, since: string): Promise<SyncPullResponse> {
     const sinceDate = parseSinceCursor(since);
     const entities: SyncEntity[] = [];
+    const ownerUserId = await resolveLegacyPlannerOwnerUserId(this.db);
 
     const [
       prepRows,
@@ -94,7 +96,10 @@ export class SyncService {
       this.db.select().from(resources).where(gt(resources.updatedAt, sinceDate)),
       this.db.select().from(dailyPlans).where(gt(dailyPlans.updatedAt, sinceDate)),
       this.db.select().from(planBlocks).where(gt(planBlocks.updatedAt, sinceDate)),
-      this.db.select().from(tasks).where(gt(tasks.updatedAt, sinceDate)),
+      this.db
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.userId, ownerUserId), gt(tasks.updatedAt, sinceDate))),
       this.db.select().from(inboxItems).where(gt(inboxItems.updatedAt, sinceDate)),
       this.db.select().from(learningItems).where(gt(learningItems.updatedAt, sinceDate)),
       this.db.select().from(resourcePreferences).where(gt(resourcePreferences.updatedAt, sinceDate)),
@@ -108,7 +113,10 @@ export class SyncService {
         .select()
         .from(opportunityRequirements)
         .where(gt(opportunityRequirements.updatedAt, sinceDate)),
-      this.db.select().from(goals).where(gt(goals.updatedAt, sinceDate)),
+      this.db
+        .select()
+        .from(goals)
+        .where(and(eq(goals.userId, ownerUserId), gt(goals.updatedAt, sinceDate))),
       this.db.select().from(skillLevels).where(gt(skillLevels.updatedAt, sinceDate)),
       this.db.select().from(profileStatus).where(gt(profileStatus.updatedAt, sinceDate)),
       this.db.select().from(travelEdges).where(gt(travelEdges.updatedAt, sinceDate)),
@@ -228,10 +236,12 @@ export class SyncService {
     }
 
     if (m.entityType === 'goal' && m.operation === 'upsert') {
+      const userId = await resolveLegacyPlannerOwnerUserId(this.db);
       await this.db
         .insert(goals)
         .values({
           id: m.entityId,
+          userId,
           title: String(p.title ?? 'Goal'),
           lifeArea: String(p.life_area ?? p.lifeArea ?? 'INTELLECTUAL'),
           seasonId: (p.season_id ?? p.seasonId) as string | null,
@@ -416,15 +426,23 @@ export class SyncService {
 
 /** Helpers used by intake clarify / suggestions. */
 export async function getActiveProfile(db: Db) {
+  const ownerUserId = await resolveLegacyPlannerOwnerUserId(db);
   const [goalRows, skillRows, profileRows, travelRows, missionRows, seasonRows, projectRows] =
     await Promise.all([
-      db.select().from(goals).where(isNull(goals.deletedAt)),
+      db
+        .select()
+        .from(goals)
+        .where(and(eq(goals.userId, ownerUserId), isNull(goals.deletedAt))),
       db.select().from(skillLevels).where(isNull(skillLevels.deletedAt)),
       db.select().from(profileStatus).where(isNull(profileStatus.deletedAt)).limit(1),
       db.select().from(travelEdges).where(isNull(travelEdges.deletedAt)),
       db.select().from(missions).limit(1),
       db.select().from(seasons).limit(1),
-      db.select().from(projects).limit(20),
+      db
+        .select()
+        .from(projects)
+        .where(eq(projects.userId, ownerUserId))
+        .limit(20),
     ]);
   return {
     goals: goalRows.filter((g) => g.status !== 'DONE'),

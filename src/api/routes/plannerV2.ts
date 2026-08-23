@@ -1,8 +1,10 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { PlannerV2Service } from '../../application/plannerV2Service.js';
 import type { DeviceService } from '../../application/deviceService.js';
+import type { IdentityService } from '../../modules/identity/identityService.js';
 import { createPlannerAuthHook } from '../middleware/plannerAuth.js';
+import { createPersonalOsUserHook } from '../middleware/personalOsAuth.js';
 
 const isoDateTime = z.string().datetime({ offset: true });
 const priority = z.enum(['LOW', 'NORMAL', 'HIGH', 'DROP', 'P1', 'P2', 'P3', 'P4']);
@@ -124,96 +126,131 @@ const createGoalSchema = z.object({
   reviewSnapshot: reviewSnapshotSchema.nullable().optional(),
 });
 
+function requireUserId(request: FastifyRequest): string {
+  const userId = request.posUser?.id;
+  if (!userId) {
+    throw Object.assign(new Error('Sign in with Google to continue'), {
+      statusCode: 401,
+      code: 'UNAUTHENTICATED',
+    });
+  }
+  return userId;
+}
+
 export async function plannerV2Routes(
   app: FastifyInstance,
-  deps: { deviceService: DeviceService; planner: PlannerV2Service; webToken?: string },
+  deps: {
+    deviceService: DeviceService;
+    planner: PlannerV2Service;
+    webToken?: string;
+    identity?: IdentityService;
+  },
 ): Promise<void> {
-  const auth = createPlannerAuthHook(deps.deviceService, deps.webToken);
+  const serviceAuth = createPlannerAuthHook(deps.deviceService, deps.webToken);
+  const userAuth = deps.identity
+    ? createPersonalOsUserHook(deps.identity)
+    : async () => undefined;
+  const auth = [serviceAuth, userAuth];
 
   app.get('/v2/planner', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const query = z.object({ from: isoDateTime, to: isoDateTime }).parse(request.query);
     if (new Date(query.to).getTime() <= new Date(query.from).getTime()) {
       return reply.code(400).send({
         error: { code: 'INVALID_RANGE', message: 'to must be after from' },
       });
     }
-    return reply.send(await deps.planner.getPlanner(query.from, query.to));
+    return reply.send(await deps.planner.getPlanner(userId, query.from, query.to));
   });
 
   app.post('/v2/tasks', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const body = createTaskSchema.parse(request.body ?? {});
-    return reply.code(201).send(await deps.planner.createTask(body));
+    return reply.code(201).send(await deps.planner.createTask(userId, body));
   });
 
   app.patch('/v2/tasks/:id', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = createTaskSchema.partial().extend({
       status: z.enum(['INBOX', 'SCHEDULED', 'DONE']).optional(),
     }).parse(request.body ?? {});
-    return reply.send(await deps.planner.patchTask(params.id, body));
+    return reply.send(await deps.planner.patchTask(userId, params.id, body));
   });
 
   app.get('/v2/tasks/:id/time-blocks', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    return reply.send(await deps.planner.getTaskTimeBlocks(params.id));
+    return reply.send(await deps.planner.getTaskTimeBlocks(userId, params.id));
   });
 
   app.delete('/v2/tasks/:id', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    return reply.send(await deps.planner.deleteTask(params.id));
+    return reply.send(await deps.planner.deleteTask(userId, params.id));
   });
 
   app.post('/v2/time-blocks', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const body = createTimeBlockSchema.parse(request.body ?? {});
-    return reply.code(201).send(await deps.planner.createTimeBlock(body));
+    return reply.code(201).send(await deps.planner.createTimeBlock(userId, body));
   });
 
   app.patch('/v2/time-blocks/:id', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = createTimeBlockSchema.partial().parse(request.body ?? {});
-    return reply.send(await deps.planner.patchTimeBlock(params.id, body));
+    return reply.send(await deps.planner.patchTimeBlock(userId, params.id, body));
   });
 
   app.delete('/v2/time-blocks/:id', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    return reply.send(await deps.planner.deleteTimeBlock(params.id));
+    return reply.send(await deps.planner.deleteTimeBlock(userId, params.id));
   });
 
   app.post('/v2/projects', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const body = createProjectSchema.parse(request.body ?? {});
-    return reply.code(201).send(await deps.planner.createProject(body));
+    return reply.code(201).send(await deps.planner.createProject(userId, body));
   });
 
   app.patch('/v2/projects/:id', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = createProjectSchema.partial().parse(request.body ?? {});
-    return reply.send(await deps.planner.patchProject(params.id, body));
+    return reply.send(await deps.planner.patchProject(userId, params.id, body));
   });
 
   app.delete('/v2/projects/:id', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    return reply.send(await deps.planner.deleteProject(params.id));
+    return reply.send(await deps.planner.deleteProject(userId, params.id));
   });
 
   app.post('/v2/goals', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const body = createGoalSchema.parse(request.body ?? {});
-    return reply.code(201).send(await deps.planner.createGoal(body));
+    return reply.code(201).send(await deps.planner.createGoal(userId, body));
   });
 
   app.patch('/v2/goals/:id', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = createGoalSchema.partial().parse(request.body ?? {});
-    return reply.send(await deps.planner.patchGoal(params.id, body));
+    return reply.send(await deps.planner.patchGoal(userId, params.id, body));
   });
 
   app.delete('/v2/goals/:id', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    return reply.send(await deps.planner.deleteGoal(params.id));
+    return reply.send(await deps.planner.deleteGoal(userId, params.id));
   });
 
   app.get('/v2/goals/:id/progress', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const query = z.object({ now: isoDateTime.optional() }).parse(request.query);
-    return reply.send(await deps.planner.getGoalProgress(params.id, query.now));
+    return reply.send(await deps.planner.getGoalProgress(userId, params.id, query.now));
   });
 }

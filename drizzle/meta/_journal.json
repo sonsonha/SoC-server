@@ -113,6 +113,34 @@
       "when": 1720000015000,
       "tag": "0015_goal_progress_reflection",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1720000016000,
+      "tag": "0016_personal_os_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1720000017000,
+      "tag": "0017_planner_ownership_nullable",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1720000018000,
+      "tag": "0019_google_calendar_per_user",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1720000019000,
+      "tag": "0021_onboarding_completed_at",
+      "breakpoints": true
     }
   ]
 }

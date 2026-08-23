@@ -19,6 +19,21 @@ const envSchema = z.object({
   DEVICE_AUTH_PEPPER: z.string().min(8),
   // Optional server-to-server credential used by the private Personal OS web app.
   PLANNER_WEB_TOKEN: z.string().min(32).optional(),
+  /**
+   * Google Identity Services client ID (openid/email/profile).
+   * Defaults to GOOGLE_OAUTH_CLIENT_ID when unset (same Web client is typical).
+   */
+  GOOGLE_IDENTITY_CLIENT_ID: z.string().optional(),
+  /**
+   * Temporary Batch A allowlist — comma-separated emails that may access the
+   * still-global planner dataset. Empty = deny all identity logins.
+   */
+  PERSONAL_OS_ALLOWED_EMAILS: z.string().optional(),
+  /**
+   * Explicit owner for one-time planner data backfill + legacy Google Calendar
+   * integration (Batch B). Never auto-picks "first user".
+   */
+  PERSONAL_OS_INITIAL_OWNER_EMAIL: z.string().optional(),
   REGISTER_TOKEN: z.string().optional(),
   WORKER_ENABLED: z
     .string()

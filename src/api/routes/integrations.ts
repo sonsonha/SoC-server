@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AppConfig } from '../../config.js';
 import type { DeviceService } from '../../application/deviceService.js';
@@ -7,28 +8,35 @@ import { createDeviceAuthHook } from '../middleware/deviceAuth.js';
 import { createPlannerAuthHook } from '../middleware/plannerAuth.js';
 import type { IntegrationTokenService } from '../../modules/integrations/tokenService.js';
 import type { CalendarPullService } from '../../modules/integrations/calendarPullService.js';
-import type { FakeCalendarProvider } from '../../infrastructure/providers/calendar/fakeCalendarProvider.js';
 import { calendarSyncState } from '../../infrastructure/db/schema/index.js';
 import type { Db } from '../../infrastructure/db/client.js';
-import type { CalendarProvider } from '../../infrastructure/providers/calendar/types.js';
 import type { PlannerV2Service } from '../../application/plannerV2Service.js';
+import type { IdentityService } from '../../modules/identity/identityService.js';
+import { createPersonalOsUserHook } from '../middleware/personalOsAuth.js';
 import {
   isGoogleCalendarError,
   type GoogleCalendarErrorCode,
 } from '../../infrastructure/providers/calendar/googleErrors.js';
+import {
+  OAuthConnectionStateService,
+  fetchGoogleAccountIdentity,
+} from '../../modules/integrations/oauthConnectionState.js';
 import {
   oauthErrorRedirectUrl,
   oauthSuccessRedirectUrl,
   resolvePlannerWebReturnUrl,
 } from './oauthReturnUrl.js';
 
-/** In-process last sync failure for status — not secrets, safe codes only. */
-let lastGoogleSyncError: {
-  code: GoogleCalendarErrorCode | string;
-  message: string;
-  googleStatus: number | null;
-  at: string;
-} | null = null;
+/** Per-user last sync failure for status — not secrets, safe codes only. */
+const lastGoogleSyncError = new Map<
+  string,
+  {
+    code: GoogleCalendarErrorCode | string;
+    message: string;
+    googleStatus: number | null;
+    at: string;
+  }
+>();
 
 const connectBody = z.object({
   mode: z.enum(['fake', 'token']).default('fake'),
@@ -40,6 +48,8 @@ const connectBody = z.object({
 });
 
 const OAUTH_STATE_MAX_AGE_MS = 10 * 60_000;
+const GOOGLE_OPENID_SCOPE = 'openid';
+const GOOGLE_EMAIL_SCOPE = 'email';
 const GOOGLE_CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 const GOOGLE_CALENDAR_MANAGE_SCOPE = 'https://www.googleapis.com/auth/calendar.calendars';
 const GOOGLE_CALENDAR_LIST_SCOPE =
@@ -50,12 +60,15 @@ export function googleAuthUrl(
   state?: string,
 ): { url: string; redirectUri: string; scopes: string[] } {
   const redirectUri = defaultRedirectUri(config);
-  // Always request calendarlist.readonly so EXTERNAL pull can discover selected
-  // calendars. Calendar create/manage only when no dedicated write calendar ID.
+  // Always request openid/email (account binding) + calendarlist + calendars manage
+  // so each user can create a Personal OS write calendar. Do not gate on
+  // GOOGLE_COS_CALENDAR_ID (legacy shared write calendar).
   const scopes = [
+    GOOGLE_OPENID_SCOPE,
+    GOOGLE_EMAIL_SCOPE,
     GOOGLE_CALENDAR_EVENTS_SCOPE,
     GOOGLE_CALENDAR_LIST_SCOPE,
-    ...(config.GOOGLE_COS_CALENDAR_ID ? [] : [GOOGLE_CALENDAR_MANAGE_SCOPE]),
+    GOOGLE_CALENDAR_MANAGE_SCOPE,
   ];
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   url.searchParams.set('client_id', config.GOOGLE_OAUTH_CLIENT_ID!);
@@ -69,6 +82,7 @@ export function googleAuthUrl(
   return { url: url.toString(), redirectUri, scopes };
 }
 
+/** HMAC state helpers — kept for backward-compat unit tests; V2 uses OAuthConnectionStateService. */
 export function createWebOAuthState(secret: string, now: number = Date.now()): string {
   const payload = `${now}.${randomBytes(18).toString('base64url')}`;
   const signature = createHmac('sha256', secret).update(payload).digest('base64url');
@@ -135,6 +149,21 @@ async function exchangeGoogleCode(
   };
 }
 
+function setSyncError(
+  userId: string,
+  err: {
+    code: GoogleCalendarErrorCode | string;
+    message: string;
+    googleStatus: number | null;
+  },
+): void {
+  lastGoogleSyncError.set(userId, { ...err, at: new Date().toISOString() });
+}
+
+function clearSyncError(userId: string): void {
+  lastGoogleSyncError.delete(userId);
+}
+
 export async function integrationRoutes(
   app: FastifyInstance,
   deps: {
@@ -142,13 +171,171 @@ export async function integrationRoutes(
     config: AppConfig;
     tokenService: IntegrationTokenService;
     calendarPull: CalendarPullService;
-    calendarProvider: CalendarProvider;
     plannerV2: PlannerV2Service;
     db: Db;
+    identity: IdentityService;
+    oauthStates: OAuthConnectionStateService;
   },
 ): Promise<void> {
   const auth = createDeviceAuthHook(deps.deviceService);
-  const plannerAuth = createPlannerAuthHook(deps.deviceService, deps.config.PLANNER_WEB_TOKEN);
+  const serviceAuth = createPlannerAuthHook(deps.deviceService, deps.config.PLANNER_WEB_TOKEN);
+  const userAuth = createPersonalOsUserHook(deps.identity);
+  const plannerAuth = [serviceAuth, userAuth];
+
+  /**
+   * Mobile / device (V1) Calendar is owner-only: all token + sync operations map to
+   * `identity.resolveInitialOwnerUser()`. If the initial owner is unset or has never
+   * signed in, return 403 DEVICE_PLANNER_OWNER_REQUIRED.
+   */
+  const requireOwnerUserId = async (
+    reply: FastifyReply,
+  ): Promise<string | null> => {
+    const owner = await deps.identity.resolveInitialOwnerUser();
+    if (!owner) {
+      await reply.code(403).send({
+        error: {
+          code: 'DEVICE_PLANNER_OWNER_REQUIRED',
+          message:
+            'Configure PERSONAL_OS_INITIAL_OWNER_EMAIL and have that user sign in before Calendar on device',
+        },
+      });
+      return null;
+    }
+    return owner.id;
+  };
+
+  const buildProviderStatus = async (userId: string) => {
+    const status = await deps.tokenService.getPublicStatus(userId, {
+      useFakeProviders: deps.config.USE_FAKE_PROVIDERS,
+    });
+    const stateRows = await deps.db
+      .select()
+      .from(calendarSyncState)
+      .where(eq(calendarSyncState.userId, userId))
+      .limit(1);
+    const syncLastAt = stateRows[0]?.lastSyncAt?.toISOString() ?? null;
+    const lastSyncAt = syncLastAt ?? status.lastSyncAt;
+    const syncErr = lastGoogleSyncError.get(userId);
+    const lastError = syncErr
+      ? {
+          code: syncErr.code,
+          message: syncErr.message,
+          googleStatus: syncErr.googleStatus,
+          at: syncErr.at,
+        }
+      : status.lastErrorCode
+        ? {
+            code: status.lastErrorCode,
+            message: status.lastErrorCode,
+            googleStatus: null,
+            at: null,
+          }
+        : null;
+    return {
+      provider: 'google_calendar' as const,
+      connected: status.connected,
+      healthy: status.healthy && !syncErr,
+      reconnectRequired:
+        status.reconnectRequired
+        || syncErr?.code === 'GOOGLE_RECONNECT_REQUIRED'
+        || syncErr?.code === 'GOOGLE_FORBIDDEN',
+      mode: status.mode,
+      googleAccountEmail: status.googleAccountEmail,
+      lastSyncAt,
+      lastError,
+      writeCalendarId: status.writeCalendarId,
+    };
+  };
+
+  const runCalendarSync = async (userId: string, reply: FastifyReply) => {
+    try {
+      const summary = await deps.calendarPull.pull(userId);
+      if (summary.reconnectRequired || summary.errorCode === 'GOOGLE_RECONNECT_REQUIRED') {
+        await deps.tokenService.markReconnectRequired(
+          userId,
+          summary.errorCode ?? 'GOOGLE_RECONNECT_REQUIRED',
+        );
+        setSyncError(userId, {
+          code: summary.errorCode ?? 'GOOGLE_RECONNECT_REQUIRED',
+          message: summary.errorMessage ?? 'Google Calendar reconnect required',
+          googleStatus: summary.googleStatus ?? null,
+        });
+        return reply.code(401).send({
+          ok: false,
+          error: {
+            code: lastGoogleSyncError.get(userId)!.code,
+            message: lastGoogleSyncError.get(userId)!.message,
+            googleStatus: lastGoogleSyncError.get(userId)!.googleStatus,
+          },
+          summary: {
+            ...summary,
+            retry: { attempted: 0, synced: 0, failed: 0 },
+          },
+        });
+      }
+
+      const retry = summary.connected
+        ? await deps.plannerV2.retryCalendarSync(userId)
+        : { attempted: 0, synced: 0, failed: 0 };
+
+      if (summary.errorCode) {
+        if (
+          summary.errorCode === 'GOOGLE_FORBIDDEN'
+          || summary.errorCode === 'GOOGLE_RECONNECT_REQUIRED'
+        ) {
+          await deps.tokenService.markReconnectRequired(userId, summary.errorCode);
+        }
+        setSyncError(userId, {
+          code: summary.errorCode,
+          message: summary.errorMessage ?? 'Google Calendar sync degraded',
+          googleStatus: summary.googleStatus ?? null,
+        });
+      } else {
+        await deps.tokenService.touchLastSync(userId);
+        clearSyncError(userId);
+      }
+
+      return reply.send({ ok: true, summary: { ...summary, retry } });
+    } catch (err) {
+      if (isGoogleCalendarError(err)) {
+        if (
+          err.code === 'GOOGLE_RECONNECT_REQUIRED'
+          || err.code === 'GOOGLE_FORBIDDEN'
+        ) {
+          await deps.tokenService.markReconnectRequired(userId, err.code);
+        }
+        setSyncError(userId, {
+          code: err.code,
+          message: err.message,
+          googleStatus: err.googleStatus ?? null,
+        });
+        console.error('calendar.sync failed', err.toLogFields());
+        return reply.code(err.statusCode).send({
+          ok: false,
+          error: err.toJSON(),
+          summary: {
+            fetched: 0,
+            upserted: 0,
+            removed: 0,
+            ownedUpdated: 0,
+            ownedRemoved: 0,
+            replannedDates: [],
+            connected: false,
+            reconnectRequired: err.code === 'GOOGLE_RECONNECT_REQUIRED'
+              || err.code === 'GOOGLE_FORBIDDEN',
+            errorCode: err.code,
+            errorMessage: err.message,
+            googleStatus: err.googleStatus ?? null,
+            retry: { attempted: 0, synced: 0, failed: 0 },
+          },
+        });
+      }
+      console.error('calendar.sync unexpected error', {
+        message: err instanceof Error ? err.message : 'unknown',
+      });
+      throw err;
+    }
+  };
 
   app.get('/v1/integrations/google/auth-url', { preHandler: auth }, async (_request, reply) => {
     if (deps.config.USE_FAKE_PROVIDERS || !deps.config.GOOGLE_OAUTH_CLIENT_ID) {
@@ -167,12 +354,17 @@ export async function integrationRoutes(
     });
   });
 
-  app.get('/v2/integrations/google/auth-url', { preHandler: plannerAuth }, async (_request, reply) => {
+  app.get('/v2/integrations/google/auth-url', { preHandler: plannerAuth }, async (request, reply) => {
+    if (!request.posUser) {
+      return reply.code(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Sign in required to connect Google Calendar' },
+      });
+    }
     if (deps.config.USE_FAKE_PROVIDERS || !deps.config.GOOGLE_OAUTH_CLIENT_ID) {
       return reply.send({ mode: 'fake', url: null });
     }
-    const state = createWebOAuthState(deps.config.DEVICE_AUTH_PEPPER);
-    const result = googleAuthUrl(deps.config, state);
+    const { rawState } = await deps.oauthStates.create(request.posUser.id);
+    const result = googleAuthUrl(deps.config, rawState);
     return reply.send({
       mode: 'oauth',
       url: result.url,
@@ -182,7 +374,8 @@ export async function integrationRoutes(
   });
 
   /**
-   * Google redirects here after consent (browser). No device auth — single-user prototype.
+   * Google redirects here after consent (browser). No device/session cookie —
+   * user binding comes from oauthStates.consume(state).
    * Accept both /oauth-callback and /callback so Railway/Google URI typos don't brick connect.
    * GOOGLE_OAUTH_REDIRECT_URI must match Google Cloud Console character-for-character.
    */
@@ -240,25 +433,42 @@ export async function integrationRoutes(
         .code(500)
         .send('<h1>Server missing GOOGLE_OAUTH_CLIENT_ID / SECRET</h1>');
     }
+
+    const userId = await deps.oauthStates.consume(q.state);
+    if (!userId) {
+      return redirectOrHtml('error', 'invalid_state');
+    }
+
     try {
       const tokens = await exchangeGoogleCode(deps.config, q.code);
-      await deps.tokenService.saveGoogleCalendarTokens({
+      const googleIdentity = await fetchGoogleAccountIdentity(tokens.access_token);
+      if (!googleIdentity) {
+        return redirectOrHtml('error', 'account_mismatch');
+      }
+
+      const user = await deps.identity.getUserById(userId);
+      if (!user) {
+        return redirectOrHtml('error', 'invalid_state');
+      }
+      // GOOGLE_ACCOUNT_MISMATCH — signed-in Personal OS user must match Google account.
+      if (googleIdentity.sub !== user.googleSub) {
+        return redirectOrHtml('error', 'account_mismatch');
+      }
+
+      await deps.tokenService.saveGoogleCalendarTokens(userId, {
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token ?? null,
         expiresAt: tokens.expires_in
           ? new Date(Date.now() + tokens.expires_in * 1000)
           : null,
         scopes: tokens.scope ?? null,
+        googleAccountSub: googleIdentity.sub,
+        googleAccountEmail: googleIdentity.email,
       });
-      lastGoogleSyncError = null;
-      // Prefer redirect whenever return URL is configured. State verifies web
-      // connect flow; Android/manual connect still gets HTML only when return URL missing.
-      if (webReturnConfigured && (!q.state || verifyWebOAuthState(q.state, deps.config.DEVICE_AUTH_PEPPER))) {
+      clearSyncError(userId);
+
+      if (webReturnConfigured) {
         return redirectOrHtml('success');
-      }
-      if (webReturnConfigured && q.state && !verifyWebOAuthState(q.state, deps.config.DEVICE_AUTH_PEPPER)) {
-        // Tokens saved; still send user back to Vercel with a soft error flag.
-        return redirectOrHtml('error', 'invalid_state');
       }
       return reply.type('text/html').send(`<!doctype html>
 <html><body style="font-family:system-ui;padding:2rem">
@@ -282,7 +492,19 @@ export async function integrationRoutes(
   app.get('/v1/integrations/google/oauth-callback', handleOAuthRedirect);
   app.get('/v1/integrations/google/callback', handleOAuthRedirect);
 
+  // Mobile device connect — owner-only (see requireOwnerUserId comment above).
   app.post('/v1/integrations/google/connect', { preHandler: auth }, async (request, reply) => {
+    const owner = await deps.identity.resolveInitialOwnerUser();
+    if (!owner) {
+      return reply.code(403).send({
+        error: {
+          code: 'DEVICE_PLANNER_OWNER_REQUIRED',
+          message:
+            'Configure PERSONAL_OS_INITIAL_OWNER_EMAIL and have that user sign in before Calendar on device',
+        },
+      });
+    }
+
     const body = connectBody.parse(request.body ?? {});
     const liveConfigured =
       !deps.config.USE_FAKE_PROVIDERS && Boolean(deps.config.GOOGLE_OAUTH_CLIENT_ID);
@@ -299,27 +521,15 @@ export async function integrationRoutes(
           redirectUri: result.redirectUri,
         });
       }
-      await deps.tokenService.saveGoogleCalendarTokens({
+      await deps.tokenService.saveGoogleCalendarTokens(owner.id, {
         accessToken: 'fake-access-token',
         refreshToken: 'fake-refresh-token',
         expiresAt: new Date(Date.now() + 86400_000),
         scopes: 'fake',
+        googleAccountSub: owner.googleSub,
+        googleAccountEmail: owner.email,
       });
-      const fake = deps.calendarProvider as FakeCalendarProvider;
-      if (typeof fake.seed === 'function' && fake.externalEvents().length === 0) {
-        const tomorrow = Date.now() + 86_400_000;
-        const start = tomorrow - (tomorrow % 3_600_000) + 15 * 3_600_000;
-        fake.seed([
-          {
-            eventId: 'fake-meeting-1',
-            title: 'Synced Google meeting',
-            startEpochMs: start,
-            endEpochMs: start + 3_600_000,
-            location: 'Office',
-            calendarId: 'primary',
-          },
-        ]);
-      }
+      clearSyncError(owner.id);
       return reply.send({ connected: true, provider: 'google_calendar', mode: 'fake' });
     }
 
@@ -333,26 +543,33 @@ export async function integrationRoutes(
     }
 
     if (body.accessToken) {
-      await deps.tokenService.saveGoogleCalendarTokens({
+      await deps.tokenService.saveGoogleCalendarTokens(owner.id, {
         accessToken: body.accessToken,
         refreshToken: body.refreshToken ?? null,
         expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
         scopes: 'manual',
+        googleAccountSub: owner.googleSub,
+        googleAccountEmail: owner.email,
       });
+      clearSyncError(owner.id);
       return reply.send({ connected: true, provider: 'google_calendar', mode: 'token' });
     }
 
     if (body.code && deps.config.GOOGLE_OAUTH_CLIENT_ID && deps.config.GOOGLE_OAUTH_CLIENT_SECRET) {
       try {
         const tokens = await exchangeGoogleCode(deps.config, body.code);
-        await deps.tokenService.saveGoogleCalendarTokens({
+        const googleIdentity = await fetchGoogleAccountIdentity(tokens.access_token);
+        await deps.tokenService.saveGoogleCalendarTokens(owner.id, {
           accessToken: tokens.access_token,
           refreshToken: tokens.refresh_token ?? null,
           expiresAt: tokens.expires_in
             ? new Date(Date.now() + tokens.expires_in * 1000)
             : null,
           scopes: tokens.scope ?? null,
+          googleAccountSub: googleIdentity?.sub ?? owner.googleSub,
+          googleAccountEmail: googleIdentity?.email ?? owner.email,
         });
+        clearSyncError(owner.id);
         return reply.send({ connected: true, provider: 'google_calendar', mode: 'oauth' });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -378,147 +595,68 @@ export async function integrationRoutes(
     return reply.code(result.statusCode).send(result.json());
   });
 
-  const integrationStatus = async (_request: FastifyRequest, reply: FastifyReply) => {
-    const tokens = await deps.tokenService.getGoogleCalendarTokens();
-    const isFakeToken = tokens?.accessToken === 'fake-access-token';
-    const connected = Boolean(tokens) && !isFakeToken;
-    const stateRows = await deps.db.select().from(calendarSyncState).limit(1);
-    const lastSyncAt = stateRows[0]?.lastSyncAt?.toISOString() ?? null;
-    const lastReplanAt = stateRows[0]?.lastReplanAt?.toISOString() ?? null;
-    const mode = deps.config.USE_FAKE_PROVIDERS || isFakeToken ? 'fake' : connected ? 'live' : 'none';
-    const missingRefresh = connected && !tokens?.refreshToken;
-    const expiredWithoutRefresh =
-      connected
-      && Boolean(tokens?.expiresAt)
-      && (tokens!.expiresAt!.getTime() < Date.now())
-      && !tokens?.refreshToken;
-    const reconnectRequired = Boolean(
-      missingRefresh
-      || expiredWithoutRefresh
-      || lastGoogleSyncError?.code === 'GOOGLE_RECONNECT_REQUIRED'
-      || lastGoogleSyncError?.code === 'GOOGLE_FORBIDDEN',
-    );
-    const healthy = connected && !reconnectRequired && lastGoogleSyncError == null;
-    return reply.send({
-      providers: [
-        {
-          provider: 'google_calendar',
-          connected: connected || (deps.config.USE_FAKE_PROVIDERS && Boolean(tokens)),
-          healthy,
-          reconnectRequired,
-          mode,
-          lastSyncAt,
-          lastReplanAt,
-          calendarChanged: Boolean(lastReplanAt && lastSyncAt && lastReplanAt > lastSyncAt),
-          lastError: lastGoogleSyncError
-            ? {
-                code: lastGoogleSyncError.code,
-                message: lastGoogleSyncError.message,
-                googleStatus: lastGoogleSyncError.googleStatus,
-                at: lastGoogleSyncError.at,
-              }
-            : null,
-        },
-      ],
-    });
-  };
+  app.get('/v1/integrations/status', { preHandler: auth }, async (_request, reply) => {
+    const ownerId = await requireOwnerUserId(reply);
+    if (!ownerId) return;
+    const provider = await buildProviderStatus(ownerId);
+    return reply.send({ providers: [provider] });
+  });
 
-  app.get('/v1/integrations/status', { preHandler: auth }, integrationStatus);
-  app.get('/v2/integrations/status', { preHandler: plannerAuth }, integrationStatus);
+  app.get('/v2/integrations/status', { preHandler: plannerAuth }, async (request, reply) => {
+    if (!request.posUser) {
+      return reply.code(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Sign in required' },
+      });
+    }
+    const provider = await buildProviderStatus(request.posUser.id);
+    return reply.send({ providers: [provider] });
+  });
 
   app.delete('/v1/integrations/google', { preHandler: auth }, async (_request, reply) => {
-    await deps.tokenService.clearGoogleCalendar();
+    const ownerId = await requireOwnerUserId(reply);
+    if (!ownerId) return;
+    await deps.tokenService.clearGoogleCalendar(ownerId);
+    await deps.calendarPull.clearExternalCommitments(ownerId);
+    clearSyncError(ownerId);
     return reply.send({ connected: false });
   });
-  app.delete('/v2/integrations/google', { preHandler: plannerAuth }, async (_request, reply) => {
-    await deps.tokenService.clearGoogleCalendar();
+
+  app.delete('/v2/integrations/google', { preHandler: plannerAuth }, async (request, reply) => {
+    if (!request.posUser) {
+      return reply.code(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Sign in required' },
+      });
+    }
+    const userId = request.posUser.id;
+    await deps.tokenService.clearGoogleCalendar(userId);
+    await deps.calendarPull.clearExternalCommitments(userId);
+    clearSyncError(userId);
+    // Disconnect Calendar only — do not revoke Personal OS session / logout.
     return reply.send({ connected: false });
   });
 
   app.get('/v1/calendar/events', { preHandler: auth }, async (request, reply) => {
+    const ownerId = await requireOwnerUserId(reply);
+    if (!ownerId) return;
     const q = request.query as { from?: string; to?: string };
     const fromEpochMs = q.from ? Date.parse(q.from) : Date.now() - 86_400_000;
     const toEpochMs = q.to ? Date.parse(q.to) : Date.now() + 14 * 86_400_000;
-    const events = await deps.calendarPull.listStoredEvents(fromEpochMs, toEpochMs);
+    const events = await deps.calendarPull.listStoredEvents(ownerId, fromEpochMs, toEpochMs);
     return reply.send({ events });
   });
 
-  const syncCalendar = async (_request: FastifyRequest, reply: FastifyReply) => {
-    try {
-      const summary = await deps.calendarPull.pull();
-      if (summary.reconnectRequired || summary.errorCode === 'GOOGLE_RECONNECT_REQUIRED') {
-        lastGoogleSyncError = {
-          code: summary.errorCode ?? 'GOOGLE_RECONNECT_REQUIRED',
-          message: summary.errorMessage ?? 'Google Calendar reconnect required',
-          googleStatus: summary.googleStatus ?? null,
-          at: new Date().toISOString(),
-        };
-        return reply.code(401).send({
-          ok: false,
-          error: {
-            code: lastGoogleSyncError.code,
-            message: lastGoogleSyncError.message,
-            googleStatus: lastGoogleSyncError.googleStatus,
-          },
-          summary: {
-            ...summary,
-            retry: { attempted: 0, synced: 0, failed: 0 },
-          },
-        });
-      }
+  app.post('/v1/calendar/sync', { preHandler: auth }, async (_request, reply) => {
+    const ownerId = await requireOwnerUserId(reply);
+    if (!ownerId) return;
+    return runCalendarSync(ownerId, reply);
+  });
 
-      const retry = summary.connected
-        ? await deps.plannerV2.retryCalendarSync()
-        : { attempted: 0, synced: 0, failed: 0 };
-
-      if (summary.errorCode) {
-        lastGoogleSyncError = {
-          code: summary.errorCode,
-          message: summary.errorMessage ?? 'Google Calendar sync degraded',
-          googleStatus: summary.googleStatus ?? null,
-          at: new Date().toISOString(),
-        };
-      } else {
-        lastGoogleSyncError = null;
-      }
-
-      return reply.send({ ok: true, summary: { ...summary, retry } });
-    } catch (err) {
-      if (isGoogleCalendarError(err)) {
-        lastGoogleSyncError = {
-          code: err.code,
-          message: err.message,
-          googleStatus: err.googleStatus ?? null,
-          at: new Date().toISOString(),
-        };
-        console.error('calendar.sync failed', err.toLogFields());
-        return reply.code(err.statusCode).send({
-          ok: false,
-          error: err.toJSON(),
-          summary: {
-            fetched: 0,
-            upserted: 0,
-            removed: 0,
-            ownedUpdated: 0,
-            ownedRemoved: 0,
-            replannedDates: [],
-            connected: false,
-            reconnectRequired: err.code === 'GOOGLE_RECONNECT_REQUIRED'
-              || err.code === 'GOOGLE_FORBIDDEN',
-            errorCode: err.code,
-            errorMessage: err.message,
-            googleStatus: err.googleStatus ?? null,
-            retry: { attempted: 0, synced: 0, failed: 0 },
-          },
-        });
-      }
-      console.error('calendar.sync unexpected error', {
-        message: err instanceof Error ? err.message : 'unknown',
+  app.post('/v2/calendar/sync', { preHandler: plannerAuth }, async (request, reply) => {
+    if (!request.posUser) {
+      return reply.code(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Sign in required' },
       });
-      throw err;
     }
-  };
-
-  app.post('/v1/calendar/sync', { preHandler: auth }, syncCalendar);
-  app.post('/v2/calendar/sync', { preHandler: plannerAuth }, syncCalendar);
+    return runCalendarSync(request.posUser.id, reply);
+  });
 }

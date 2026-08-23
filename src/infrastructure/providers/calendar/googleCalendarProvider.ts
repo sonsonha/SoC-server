@@ -12,7 +12,7 @@ type TokenBundle = {
   expiresAt?: Date | null;
 };
 
-const COS_CALENDAR_NAMES = ['Personal Planner', 'Personal Chief of Staff'] as const;
+const COS_CALENDAR_NAMES = ['Personal OS', 'Personal Planner', 'Personal Chief of Staff'] as const;
 const PLANNER_TZ = 'Asia/Ho_Chi_Minh';
 const PLANNER_TZ_OFFSET = '+07:00';
 
@@ -40,26 +40,42 @@ export function parseGoogleEventBounds(
   return { startEpochMs, endEpochMs, allDay };
 }
 
+export type GoogleCalendarProviderOptions = {
+  /** Previously stored write calendar for this user. */
+  writeCalendarId?: string | null;
+  /** Persist newly resolved/created write calendar id for this user. */
+  onWriteCalendarResolved?: (calendarId: string) => Promise<void>;
+  /** Optional extra EXTERNAL calendar IDs (legacy env / per-user later). */
+  extraReadCalendarIds?: string[];
+};
+
 /**
- * Google Calendar adapter.
- * - WRITE: GOOGLE_COS_CALENDAR_ID or calendar named Personal Planner / Personal Chief of Staff
- * - READ (EXTERNAL): primary + selected calendars (calendarList) + GOOGLE_READ_CALENDAR_IDS
- *   Cos write calendar events are still fetched via listCosEvents for ownership reconcile,
- *   and filtered out of EXTERNAL import when planner-owned.
+ * Google Calendar adapter (per-user tokens injected via getTokens/refreshTokens).
+ * - WRITE: stored writeCalendarId, or find/create "Personal OS" / legacy names
+ * - READ (EXTERNAL): primary + selected calendars; excludes this user's write calendar
  */
 export class GoogleCalendarProvider implements CalendarProvider {
   private readonly fallback = new FakeCalendarProvider();
   private resolvedCosCalendarId: string | null = null;
   private readonly extraReadCalendarIds: string[];
+  private readonly onWriteCalendarResolved?: (calendarId: string) => Promise<void>;
 
   constructor(
     private readonly getTokens: () => Promise<TokenBundle | null>,
     private readonly refreshTokens: () => Promise<TokenBundle | null>,
-    private readonly cosCalendarId?: string,
-    extraReadCalendarIds: string[] = [],
+    options: GoogleCalendarProviderOptions | string | undefined = undefined,
+    extraReadCalendarIdsLegacy: string[] = [],
   ) {
-    if (cosCalendarId) this.resolvedCosCalendarId = cosCalendarId;
-    this.extraReadCalendarIds = extraReadCalendarIds;
+    // Backward-compatible ctor: (get, refresh, cosCalendarId?, extraIds?)
+    if (typeof options === 'string' || options === undefined) {
+      if (options) this.resolvedCosCalendarId = options;
+      this.extraReadCalendarIds = extraReadCalendarIdsLegacy;
+      this.onWriteCalendarResolved = undefined;
+    } else {
+      if (options.writeCalendarId) this.resolvedCosCalendarId = options.writeCalendarId;
+      this.extraReadCalendarIds = options.extraReadCalendarIds ?? [];
+      this.onWriteCalendarResolved = options.onWriteCalendarResolved;
+    }
   }
 
   private async bearer(operation: string): Promise<string> {
@@ -163,7 +179,6 @@ export class GoogleCalendarProvider implements CalendarProvider {
     const ids = new Set<string>(['primary', ...this.extraReadCalendarIds]);
     const excludeIds = new Set<string>();
     if (this.resolvedCosCalendarId) excludeIds.add(this.resolvedCosCalendarId);
-    if (this.cosCalendarId) excludeIds.add(this.cosCalendarId);
     const cosNames = new Set(COS_CALENDAR_NAMES.map((n) => n.toLowerCase()));
 
     const listRes = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
@@ -262,6 +277,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
       if (match?.id) {
         this.resolvedCosCalendarId = match.id;
         console.info('google.cosCalendar resolved', { calendarId: match.id, summary: match.summary });
+        if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(match.id);
         return match.id;
       }
     } else {
@@ -310,6 +326,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
     }
     this.resolvedCosCalendarId = created.id;
     console.info('google.cosCalendar created', { calendarId: created.id });
+    if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(created.id);
     return created.id;
   }
 

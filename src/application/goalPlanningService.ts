@@ -2,15 +2,17 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import type { Db } from '../infrastructure/db/client.js';
 import { goals, planningRuns, seasons } from '../infrastructure/db/schema/index.js';
+import { resolveLegacyPlannerOwnerUserId } from '../modules/identity/legacyPlannerOwner.js';
 
 export class GoalPlanningService {
   constructor(private readonly db: Db) {}
 
   async listGoals(horizon?: string) {
+    const userId = await resolveLegacyPlannerOwnerUserId(this.db);
     const rows = await this.db
       .select()
       .from(goals)
-      .where(and(eq(goals.status, 'ACTIVE'), isNull(goals.deletedAt)))
+      .where(and(eq(goals.userId, userId), eq(goals.status, 'ACTIVE'), isNull(goals.deletedAt)))
       .orderBy(asc(goals.horizon), asc(goals.title));
     return horizon ? rows.filter((g) => g.horizon === horizon) : rows;
   }
@@ -29,10 +31,12 @@ export class GoalPlanningService {
   }) {
     const id = input.id ?? `goal-${randomUUID().slice(0, 8)}`;
     const now = new Date();
+    const userId = await resolveLegacyPlannerOwnerUserId(this.db);
     await this.db
       .insert(goals)
       .values({
         id,
+        userId,
         title: input.title,
         lifeArea: input.lifeArea ?? 'GENERAL',
         seasonId: input.seasonId ?? null,

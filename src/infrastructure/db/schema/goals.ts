@@ -1,13 +1,19 @@
-import { integer, pgTable, real, text } from 'drizzle-orm/pg-core';
+import { index, pgTable, real, text } from 'drizzle-orm/pg-core';
 import { syncColumns } from './syncColumns.js';
+import { users } from './identity.js';
 
 /**
  * Hierarchical goals.
  * horizon: MISSION | YEAR | QUARTER | MONTH | WEEK | SHORT | LONG
  * parentId links Month→Quarter→Year (etc). SHORT/LONG kept for legacy sync.
  */
-export const goals = pgTable('goals', {
+export const goals = pgTable(
+  'goals',
+  {
   id: text('id').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'restrict' }),
   title: text('title').notNull(),
   lifeArea: text('life_area').notNull(),
   seasonId: text('season_id'),
@@ -33,4 +39,9 @@ export const goals = pgTable('goals', {
   reflectionJson: text('reflection_json').notNull().default('{}'),
   reviewSnapshotJson: text('review_snapshot_json').notNull().default('{}'),
   ...syncColumns,
-});
+  },
+  (t) => [
+    index('goals_user_id_idx').on(t.userId),
+    index('goals_user_id_status_idx').on(t.userId, t.status),
+  ],
+);

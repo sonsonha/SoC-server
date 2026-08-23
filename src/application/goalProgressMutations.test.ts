@@ -8,7 +8,7 @@ import { inArray } from 'drizzle-orm';
 import { loadConfig, loadDotEnv } from '../config.js';
 import { closeDb, createDb, type Db } from '../infrastructure/db/client.js';
 import { runMigrations } from '../infrastructure/db/migrate.js';
-import { goals, projects, tasks, timeBlocks } from '../infrastructure/db/schema/index.js';
+import { goals, projects, tasks, timeBlocks, users } from '../infrastructure/db/schema/index.js';
 import { FakeCalendarProvider } from '../infrastructure/providers/calendar/fakeCalendarProvider.js';
 import { addDays, startOfWeek } from './goalProgress.js';
 import { PlannerV2Service } from './plannerV2Service.js';
@@ -32,6 +32,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
   const now = new Date();
   const nowIso = now.toISOString();
   const weekStart = startOfWeek(now);
+  const userId = 'gp-mut-user';
   const ids = {
     goals: [] as string[],
     projects: [] as string[],
@@ -46,7 +47,18 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     const config = loadConfig();
     await runMigrations(config.DATABASE_URL);
     db = createDb(config.DATABASE_URL);
-    planner = new PlannerV2Service(db, new FakeCalendarProvider());
+    planner = new PlannerV2Service(db, async () => new FakeCalendarProvider());
+
+    await db.insert(users).values({
+      id: userId,
+      googleSub: 'gp-mut-sub',
+      email: 'gp-mut@example.com',
+      name: 'GP Mut',
+      avatarUrl: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastLoginAt: null,
+    }).onConflictDoNothing();
   });
 
   afterAll(async () => {
@@ -54,29 +66,30 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     if (ids.tasks.length) await db.delete(tasks).where(inArray(tasks.id, ids.tasks));
     if (ids.projects.length) await db.delete(projects).where(inArray(projects.id, ids.projects));
     if (ids.goals.length) await db.delete(goals).where(inArray(goals.id, ids.goals));
+    await db.delete(users).where(inArray(users.id, [userId]));
     await closeDb();
   });
 
-  async function trackTask(title: string, input: Parameters<PlannerV2Service['createTask']>[0]) {
-    const created = await planner.createTask({ title, ...input });
+  async function trackTask(title: string, input: Parameters<PlannerV2Service['createTask']>[1]) {
+    const created = await planner.createTask(userId, { title, ...input });
     ids.tasks.push(created.id);
     return created;
   }
 
-  async function trackBlock(input: Parameters<PlannerV2Service['createTimeBlock']>[0]) {
-    const created = await planner.createTimeBlock(input);
+  async function trackBlock(input: Parameters<PlannerV2Service['createTimeBlock']>[1]) {
+    const created = await planner.createTimeBlock(userId, input);
     ids.blocks.push(created.id);
     return created;
   }
 
   it('COUNT: complete then reopen Apply — SaaS Backend Engineer (4/5 → 5/5 → 4/5)', async () => {
     const procId = 'proc-apps';
-    const goal = await planner.createGoal({
+    const goal = await planner.createGoal(userId, {
       title: 'Mutation lab — applications',
       processes: [{ id: procId, name: 'Quality Applications', measurementType: 'COUNT', targetValue: 5, period: 'WEEK', active: true }],
     });
     ids.goals.push(goal.id);
-    const project = await planner.createProject({
+    const project = await planner.createProject(userId, {
       title: 'Job Applications',
       goalId: goal.id,
       defaultGoalProcessId: procId,
@@ -93,7 +106,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
         dueHorizon: 'WEEK',
         dueAt: vnIso(weekStart.getTime()),
       });
-      await planner.patchTask(task.id, { status: 'DONE' });
+      await planner.patchTask(userId, task.id, { status: 'DONE' });
     }
     const open = await trackTask('Apply — SaaS Backend Engineer', {
       projectId: project.id,
@@ -104,24 +117,24 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     });
     expect(open.status).not.toBe('DONE');
 
-    let snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    let snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Quality Applications')).toMatchObject({ completed: 4, target: 5 });
 
-    await planner.patchTask(open.id, { status: 'DONE' });
-    snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    await planner.patchTask(userId, open.id, { status: 'DONE' });
+    snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Quality Applications').completed).toBe(5);
 
     const processesJsonAfter = (await db.select().from(goals).where(inArray(goals.id, [goal.id])))[0]!.processesJson;
     expect(processesJsonAfter).toBe(processesJsonBefore);
 
-    await planner.patchTask(open.id, { status: 'INBOX' });
-    snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    await planner.patchTask(userId, open.id, { status: 'INBOX' });
+    snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Quality Applications').completed).toBe(4);
   });
 
   it('COUNT: complete remaining Speaking Practice task (2/3 → 3/3)', async () => {
     const procId = 'proc-speak';
-    const goal = await planner.createGoal({
+    const goal = await planner.createGoal(userId, {
       title: 'Mutation lab — speaking',
       processes: [{ id: procId, name: 'Speaking Practice', measurementType: 'COUNT', targetValue: 3, period: 'WEEK', active: true }],
     });
@@ -133,7 +146,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
         dueHorizon: 'WEEK',
         dueAt: vnIso(weekStart.getTime()),
       });
-      await planner.patchTask(task.id, { status: 'DONE' });
+      await planner.patchTask(userId, task.id, { status: 'DONE' });
     }
     const open = await trackTask('IELTS Speaking Part 3 — Education', {
       goalId: goal.id,
@@ -142,17 +155,17 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
       dueAt: vnIso(weekStart.getTime()),
     });
 
-    let snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    let snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Speaking Practice')).toMatchObject({ completed: 2, target: 3 });
 
-    await planner.patchTask(open.id, { status: 'DONE' });
-    snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    await planner.patchTask(userId, open.id, { status: 'DONE' });
+    snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Speaking Practice').completed).toBe(3);
   });
 
   it('DURATION: resize planned block +1h without changing completed, then complete adds 2h', async () => {
     const procId = 'proc-tech';
-    const goal = await planner.createGoal({
+    const goal = await planner.createGoal(userId, {
       title: 'Mutation lab — duration',
       processes: [{ id: procId, name: 'Technical Preparation', measurementType: 'DURATION', targetValue: 3, unit: 'h', period: 'WEEK', active: true }],
     });
@@ -172,7 +185,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
         startAt: vnIso(start),
         endAt: vnIso(start + 90 * 60_000),
       });
-      await planner.patchTask(task.id, { status: 'DONE' });
+      await planner.patchTask(userId, task.id, { status: 'DONE' });
     }
 
     const openStart = addDays(weekStart, 5).getTime() + 14 * 3_600_000;
@@ -189,20 +202,20 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
       endAt: vnIso(openStart + 60 * 60_000),
     });
 
-    let snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    let snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     const before = processNamed(snapshot.progress, 'Technical Preparation');
     expect(before.completed).toBe(3);
     expect(before.planned).toBe(4);
     expect(before.target).toBe(3);
 
-    await planner.patchTimeBlock(block.id, { endAt: vnIso(openStart + 120 * 60_000) });
-    snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    await planner.patchTimeBlock(userId, block.id, { endAt: vnIso(openStart + 120 * 60_000) });
+    snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     const resized = processNamed(snapshot.progress, 'Technical Preparation');
     expect(resized.planned).toBe(before.planned + 1);
     expect(resized.completed).toBe(before.completed);
 
-    await planner.patchTask(open.id, { status: 'DONE' });
-    snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    await planner.patchTask(userId, open.id, { status: 'DONE' });
+    snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     const done = processNamed(snapshot.progress, 'Technical Preparation');
     expect(done.completed).toBe(before.completed + 2);
     expect(done.planned).toBe(resized.planned);
@@ -210,7 +223,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
 
   it('unschedule removes the block, keeps task/process links, drops planned not completed', async () => {
     const procId = 'proc-tech';
-    const goal = await planner.createGoal({
+    const goal = await planner.createGoal(userId, {
       title: 'Mutation lab — unschedule',
       processes: [{ id: procId, name: 'Technical Preparation', measurementType: 'DURATION', targetValue: 3, unit: 'h', period: 'WEEK', active: true }],
     });
@@ -229,7 +242,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
       startAt: vnIso(doneStart),
       endAt: vnIso(doneStart + 90 * 60_000),
     });
-    await planner.patchTask(doneTask.id, { status: 'DONE' });
+    await planner.patchTask(userId, doneTask.id, { status: 'DONE' });
 
     const openStart = addDays(weekStart, 5).getTime() + 14 * 3_600_000;
     const open = await trackTask('Review transactions and isolation', {
@@ -245,30 +258,30 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
       endAt: vnIso(openStart + 60 * 60_000),
     });
 
-    const before = processNamed((await planner.getGoalProgress(goal.id, nowIso)).progress, 'Technical Preparation');
+    const before = processNamed((await planner.getGoalProgress(userId, goal.id, nowIso)).progress, 'Technical Preparation');
     expect(before.completed).toBe(1.5);
     expect(before.planned).toBe(2.5);
 
-    await planner.deleteTimeBlock(block.id);
-    await planner.patchTask(open.id, { status: 'INBOX' });
+    await planner.deleteTimeBlock(userId, block.id);
+    await planner.patchTask(userId, open.id, { status: 'INBOX' });
 
-    const remaining = await planner.getTaskTimeBlocks(open.id);
+    const remaining = await planner.getTaskTimeBlocks(userId, open.id);
     expect(remaining).toHaveLength(0);
-    const afterTask = (await planner.getPlanner(vnIso(weekStart.getTime()), vnIso(addDays(weekStart, 7).getTime())))
+    const afterTask = (await planner.getPlanner(userId, vnIso(weekStart.getTime()), vnIso(addDays(weekStart, 7).getTime())))
       .tasks.find((item) => item.id === open.id);
     expect(afterTask?.status).toBe('INBOX');
     expect(afterTask?.goalId).toBe(goal.id);
     expect(afterTask?.goalProcessId).toBe(procId);
     expect(afterTask?.dueHorizon).toBe('WEEK');
 
-    const after = processNamed((await planner.getGoalProgress(goal.id, nowIso)).progress, 'Technical Preparation');
+    const after = processNamed((await planner.getGoalProgress(userId, goal.id, nowIso)).progress, 'Technical Preparation');
     expect(after.completed).toBe(before.completed);
     expect(after.planned).toBe(before.planned - 1);
   });
 
   it('WEEK dueHorizon does not count until completion; scheduling alone gives zero credit', async () => {
     const procId = 'proc-apps';
-    const goal = await planner.createGoal({
+    const goal = await planner.createGoal(userId, {
       title: 'Mutation lab — week horizon',
       processes: [{ id: procId, name: 'Quality Applications', measurementType: 'COUNT', targetValue: 5, period: 'WEEK', active: true }],
     });
@@ -282,7 +295,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     expect(weekTask.dueHorizon).toBe('WEEK');
     expect(weekTask.status).toBe('INBOX');
 
-    let snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    let snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Quality Applications').completed).toBe(0);
 
     const wednesday = addDays(weekStart, 2).getTime() + 10 * 3_600_000;
@@ -292,30 +305,30 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
       startAt: vnIso(wednesday),
       endAt: vnIso(wednesday + 30 * 60_000),
     });
-    const scheduled = (await planner.getPlanner(vnIso(weekStart.getTime()), vnIso(addDays(weekStart, 7).getTime())))
+    const scheduled = (await planner.getPlanner(userId, vnIso(weekStart.getTime()), vnIso(addDays(weekStart, 7).getTime())))
       .tasks.find((item) => item.id === weekTask.id);
     expect(scheduled?.status).toBe('SCHEDULED');
     expect(scheduled?.goalId).toBe(goal.id);
     expect(scheduled?.goalProcessId).toBe(procId);
     expect(block.id).toBeTruthy();
 
-    snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Quality Applications').completed).toBe(0);
 
-    await planner.patchTask(weekTask.id, { status: 'DONE' });
-    snapshot = await planner.getGoalProgress(goal.id, nowIso);
+    await planner.patchTask(userId, weekTask.id, { status: 'DONE' });
+    snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Quality Applications').completed).toBe(1);
   });
 
   it('reflection round-trip persists ACHIEVED_LATE and review fields', async () => {
-    const goal = await planner.createGoal({
+    const goal = await planner.createGoal(userId, {
       title: 'Complete Backend CV Refresh',
       targetDate: '2026-07-31',
       outcomeStatus: 'ACTIVE',
     });
     ids.goals.push(goal.id);
 
-    const updated = await planner.patchGoal(goal.id, {
+    const updated = await planner.patchGoal(userId, goal.id, {
       status: 'COMPLETED',
       outcomeStatus: 'ACHIEVED_LATE',
       achievedAt: '2026-08-03',
@@ -351,7 +364,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     expect(updated.reflection.learned).toBe('Reserve a review buffer.');
     expect(updated.reflection.nextAction).toBe('ARCHIVE');
 
-    const reread = await planner.getGoalProgress(goal.id, nowIso);
+    const reread = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(reread.goal.outcomeStatus).toBe('ACHIEVED_LATE');
     expect(reread.goal.targetDate).toBe('2026-07-31');
     expect(reread.goal.achievedAt).toBe('2026-08-03');
@@ -367,7 +380,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
       { id: 'ms-4', title: 'Technical readiness proven', status: 'pending' as const },
       { id: 'ms-5', title: 'Receive suitable offer', status: 'pending' as const },
     ];
-    const goal = await planner.createGoal({
+    const goal = await planner.createGoal(userId, {
       title: 'Mutation lab — milestones',
       currentMilestoneId: 'ms-3',
       milestones,
@@ -375,7 +388,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     ids.goals.push(goal.id);
     expect(goal.milestones.map((item) => item.status)).toEqual(['done', 'done', 'current', 'pending', 'pending']);
 
-    const updated = await planner.patchGoal(goal.id, {
+    const updated = await planner.patchGoal(userId, goal.id, {
       currentMilestoneId: 'ms-4',
       milestones: milestones.map((item) => (
         item.id === 'ms-3' ? { ...item, status: 'done' } : item
@@ -390,7 +403,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
       'Receive suitable offer:pending',
     ]);
 
-    const reread = await planner.getGoalProgress(goal.id, nowIso);
+    const reread = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(reread.goal.currentMilestoneId).toBe('ms-4');
     expect(reread.goal.milestones.map((item) => item.status)).toEqual(['done', 'done', 'done', 'current', 'pending']);
   });

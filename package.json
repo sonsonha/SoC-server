@@ -12,6 +12,12 @@
     "seed": "tsx scripts/seed-from-bootstrap.ts",
     "seed:v2-goal-demo": "tsx scripts/seed-v2-goal-demo.ts",
     "seed:v2-goal-demo:reset": "tsx scripts/seed-v2-goal-demo.ts --reset",
+    "planner:backfill-owner": "tsx scripts/backfill-planner-owner.ts",
+    "planner:verify-ownership": "tsx scripts/verify-planner-ownership.ts",
+    "planner:enforce-ownership-not-null": "tsx scripts/enforce-planner-ownership-not-null.ts",
+    "calendar:backfill-owner": "tsx scripts/backfill-calendar-owner.ts",
+    "calendar:enforce-ownership-not-null": "tsx scripts/enforce-calendar-ownership-not-null.ts",
+    "onboarding:backfill-owner": "tsx scripts/backfill-onboarding-owner.ts",
     "dev:data:reset": "tsx scripts/dev-data-reset.ts",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -23,6 +29,7 @@
     "@fastify/cors": "^10.0.2",
     "drizzle-orm": "^0.39.3",
     "fastify": "^5.2.1",
+    "jose": "^5.10.0",
     "postgres": "^3.4.5",
     "zod": "^3.24.2"
   },

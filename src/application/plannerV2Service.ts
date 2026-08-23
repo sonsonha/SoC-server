@@ -203,21 +203,34 @@ type PatchGoalInput = Partial<CreateGoalInput>;
 export class PlannerV2Service {
   constructor(
     private readonly db: Db,
-    private readonly calendar: CalendarProvider,
+    private readonly resolveCalendar: (userId: string) => Promise<CalendarProvider> | CalendarProvider,
   ) {}
 
-  async getPlanner(fromIso: string, toIso: string) {
+  private async calendarFor(userId: string): Promise<CalendarProvider> {
+    return await this.resolveCalendar(userId);
+  }
+
+  async getPlanner(
+    userId: string,
+    fromIso: string,
+    toIso: string,
+    _opts?: { includeExternalEvents?: boolean },
+  ) {
     const from = new Date(fromIso).getTime();
     const to = new Date(toIso).getTime();
     const [taskRows, projectRows, goalRows, blockRows, externalRows] = await Promise.all([
-      this.db.select().from(tasks).where(isNull(tasks.deletedAt)),
-      this.db.select().from(projects).where(isNull(projects.deletedAt)),
-      this.db.select().from(goals).where(isNull(goals.deletedAt)),
+      this.db.select().from(tasks).where(and(eq(tasks.userId, userId), isNull(tasks.deletedAt))),
+      this.db
+        .select()
+        .from(projects)
+        .where(and(eq(projects.userId, userId), isNull(projects.deletedAt))),
+      this.db.select().from(goals).where(and(eq(goals.userId, userId), isNull(goals.deletedAt))),
       this.db
         .select()
         .from(timeBlocks)
         .where(
           and(
+            eq(timeBlocks.userId, userId),
             isNull(timeBlocks.deletedAt),
             lt(timeBlocks.startEpochMs, to),
             gt(timeBlocks.endEpochMs, from),
@@ -229,6 +242,7 @@ export class PlannerV2Service {
         .from(calendarCommitments)
         .where(
           and(
+            eq(calendarCommitments.userId, userId),
             isNull(calendarCommitments.deletedAt),
             lt(calendarCommitments.startEpochMs, to),
             gt(calendarCommitments.endEpochMs, from),
@@ -255,23 +269,27 @@ export class PlannerV2Service {
     };
   }
 
-  async createTask(input: CreateTaskInput) {
-    if (input.goalId) await this.requireGoal(input.goalId);
+  async createTask(userId: string, input: CreateTaskInput) {
+    if (input.goalId) await this.requireOwnedGoal(userId, input.goalId);
+    if (input.projectId) await this.requireOwnedProject(userId, input.projectId);
     let goalId = input.goalId ?? null;
     let goalProcessId = input.goalProcessId ?? null;
     if (input.projectId) {
-      const projectRows = await this.db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1);
-      const project = projectRows[0];
-      if (project && !project.deletedAt) {
-        if (!goalId) goalId = project.goalId;
-        if (!goalProcessId) goalProcessId = project.defaultGoalProcessId;
-      }
+      const project = await this.requireOwnedProject(userId, input.projectId);
+      if (!goalId) goalId = project.goalId;
+      if (!goalProcessId) goalProcessId = project.defaultGoalProcessId;
     }
-    if (goalId) await this.requireGoal(goalId);
+    if (goalId) {
+      const goal = await this.requireOwnedGoal(userId, goalId);
+      if (goalProcessId) this.requireProcessOnGoal(goal, goalProcessId);
+    } else if (goalProcessId) {
+      this.badRequest('goalProcessId requires a goalId owned by the current user');
+    }
     const id = randomUUID();
     const now = new Date();
     await this.db.insert(tasks).values({
       id,
+      userId,
       title: input.title,
       description: input.notes ?? '',
       projectId: input.projectId ?? null,
@@ -291,11 +309,18 @@ export class PlannerV2Service {
     return this.serializeTask(created[0]!);
   }
 
-  async patchTask(id: string, input: PatchTaskInput) {
-    const current = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
-    if (!current[0] || current[0].deletedAt) this.notFound('Task');
-    const row = current[0]!;
-    if (input.goalId) await this.requireGoal(input.goalId);
+  async patchTask(userId: string, id: string, input: PatchTaskInput) {
+    const row = await this.requireOwnedTask(userId, id);
+    if (input.goalId) await this.requireOwnedGoal(userId, input.goalId);
+    if (input.projectId) await this.requireOwnedProject(userId, input.projectId);
+    const nextGoalId = input.goalId === undefined ? row.goalId : input.goalId;
+    const nextProcessId = input.goalProcessId === undefined ? row.goalProcessId : input.goalProcessId;
+    if (nextGoalId && nextProcessId) {
+      const goal = await this.requireOwnedGoal(userId, nextGoalId);
+      this.requireProcessOnGoal(goal, nextProcessId);
+    } else if (nextProcessId && !nextGoalId) {
+      this.badRequest('goalProcessId requires a goalId owned by the current user');
+    }
     const status = input.status === undefined
       ? row.status
       : input.status === 'DONE'
@@ -314,8 +339,8 @@ export class PlannerV2Service {
         title: input.title ?? row.title,
         description: input.notes ?? row.description,
         projectId: input.projectId === undefined ? row.projectId : input.projectId,
-        goalId: input.goalId === undefined ? row.goalId : input.goalId,
-        goalProcessId: input.goalProcessId === undefined ? row.goalProcessId : input.goalProcessId,
+        goalId: nextGoalId,
+        goalProcessId: nextProcessId,
         deadlineEpochMs: input.dueAt === undefined
           ? row.deadlineEpochMs
           : input.dueAt
@@ -329,33 +354,42 @@ export class PlannerV2Service {
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
-      .where(eq(tasks.id, id));
+      .where(and(eq(tasks.id, id), eq(tasks.userId, userId)));
     const updated = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
     return this.serializeTask(updated[0]!);
   }
 
-  async getTaskTimeBlocks(taskId: string) {
-    const task = await this.db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
-    if (!task[0] || task[0].deletedAt) this.notFound('Task');
+  async getTaskTimeBlocks(userId: string, taskId: string) {
+    await this.requireOwnedTask(userId, taskId);
     const rows = await this.db
       .select()
       .from(timeBlocks)
-      .where(and(eq(timeBlocks.taskId, taskId), isNull(timeBlocks.deletedAt)))
+      .where(
+        and(
+          eq(timeBlocks.userId, userId),
+          eq(timeBlocks.taskId, taskId),
+          isNull(timeBlocks.deletedAt),
+        ),
+      )
       .orderBy(asc(timeBlocks.startEpochMs));
     return rows.map((row) => this.serializeBlock(row));
   }
 
-  async deleteTask(id: string) {
-    const current = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
-    if (!current[0] || current[0].deletedAt) this.notFound('Task');
-    const row = current[0]!;
+  async deleteTask(userId: string, id: string) {
+    const row = await this.requireOwnedTask(userId, id);
     const linkedBlocks = await this.db
       .select({ id: timeBlocks.id })
       .from(timeBlocks)
-      .where(and(eq(timeBlocks.taskId, id), isNull(timeBlocks.deletedAt)));
+      .where(
+        and(
+          eq(timeBlocks.userId, userId),
+          eq(timeBlocks.taskId, id),
+          isNull(timeBlocks.deletedAt),
+        ),
+      );
 
     for (const block of linkedBlocks) {
-      await this.deleteTimeBlock(block.id);
+      await this.deleteTimeBlock(userId, block.id);
     }
 
     await this.db
@@ -366,17 +400,20 @@ export class PlannerV2Service {
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
-      .where(eq(tasks.id, id));
+      .where(and(eq(tasks.id, id), eq(tasks.userId, userId)));
     return { id, deleted: true as const, removedTimeBlocks: linkedBlocks.length };
   }
 
-  async createTimeBlock(input: CreateTimeBlockInput) {
+  async createTimeBlock(userId: string, input: CreateTimeBlockInput) {
     const start = new Date(input.startAt).getTime();
     const end = new Date(input.endAt).getTime();
     this.validateWindow(start, end);
+    if (input.taskId) await this.requireOwnedTask(userId, input.taskId);
+    if (input.projectId) await this.requireOwnedProject(userId, input.projectId);
     const id = randomUUID();
     await this.db.insert(timeBlocks).values({
       id,
+      userId,
       taskId: input.taskId ?? null,
       projectId: input.projectId ?? null,
       title: input.title,
@@ -393,15 +430,15 @@ export class PlannerV2Service {
       await this.db
         .update(tasks)
         .set({ status: 'SCHEDULED', updatedAt: new Date() })
-        .where(eq(tasks.id, input.taskId));
+        .where(and(eq(tasks.id, input.taskId), eq(tasks.userId, userId)));
     }
-    return this.syncBlock(id);
+    return this.syncBlock(userId, id);
   }
 
-  async patchTimeBlock(id: string, input: Partial<CreateTimeBlockInput>) {
-    const rows = await this.db.select().from(timeBlocks).where(eq(timeBlocks.id, id)).limit(1);
-    if (!rows[0] || rows[0].deletedAt) this.notFound('Time block');
-    const row = rows[0]!;
+  async patchTimeBlock(userId: string, id: string, input: Partial<CreateTimeBlockInput>) {
+    const row = await this.requireOwnedTimeBlock(userId, id);
+    if (input.taskId) await this.requireOwnedTask(userId, input.taskId);
+    if (input.projectId) await this.requireOwnedProject(userId, input.projectId);
     const start = input.startAt ? new Date(input.startAt).getTime() : row.startEpochMs;
     const end = input.endAt ? new Date(input.endAt).getTime() : row.endEpochMs;
     this.validateWindow(start, end);
@@ -421,16 +458,15 @@ export class PlannerV2Service {
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
-      .where(eq(timeBlocks.id, id));
-    return this.syncBlock(id);
+      .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)));
+    return this.syncBlock(userId, id);
   }
 
-  async deleteTimeBlock(id: string) {
-    const rows = await this.db.select().from(timeBlocks).where(eq(timeBlocks.id, id)).limit(1);
-    if (!rows[0] || rows[0].deletedAt) this.notFound('Time block');
-    const row = rows[0]!;
-    if (row.googleEventId && this.calendar.deleteCosEvent) {
-      await this.calendar.deleteCosEvent(row.googleEventId);
+  async deleteTimeBlock(userId: string, id: string) {
+    const row = await this.requireOwnedTimeBlock(userId, id);
+    const calendar = await this.calendarFor(userId);
+    if (row.googleEventId && calendar.deleteCosEvent) {
+      await calendar.deleteCosEvent(row.googleEventId);
     }
     await this.db
       .update(timeBlocks)
@@ -440,16 +476,24 @@ export class PlannerV2Service {
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
-      .where(eq(timeBlocks.id, id));
+      .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)));
     return { id, deleted: true as const };
   }
 
-  async createProject(input: CreateProjectInput) {
-    if (input.goalId) await this.requireGoal(input.goalId);
+  async createProject(userId: string, input: CreateProjectInput) {
+    if (input.goalId) {
+      const goal = await this.requireOwnedGoal(userId, input.goalId);
+      if (input.defaultGoalProcessId) {
+        this.requireProcessOnGoal(goal, input.defaultGoalProcessId);
+      }
+    } else if (input.defaultGoalProcessId) {
+      this.badRequest('defaultGoalProcessId requires a goalId owned by the current user');
+    }
     const id = randomUUID();
     const now = new Date();
     await this.db.insert(projects).values({
       id,
+      userId,
       title: input.title,
       goalId: input.goalId ?? null,
       defaultGoalProcessId: input.defaultGoalProcessId ?? null,
@@ -466,19 +510,24 @@ export class PlannerV2Service {
     return this.serializeProject(created[0]!);
   }
 
-  async patchProject(id: string, input: PatchProjectInput) {
-    const current = await this.db.select().from(projects).where(eq(projects.id, id)).limit(1);
-    if (!current[0] || current[0].deletedAt) this.notFound('Project');
-    const row = current[0]!;
-    if (input.goalId) await this.requireGoal(input.goalId);
+  async patchProject(userId: string, id: string, input: PatchProjectInput) {
+    const row = await this.requireOwnedProject(userId, id);
+    const nextGoalId = input.goalId === undefined ? row.goalId : input.goalId;
+    const nextProcessId = input.defaultGoalProcessId === undefined
+      ? row.defaultGoalProcessId
+      : input.defaultGoalProcessId;
+    if (nextGoalId) {
+      const goal = await this.requireOwnedGoal(userId, nextGoalId);
+      if (nextProcessId) this.requireProcessOnGoal(goal, nextProcessId);
+    } else if (nextProcessId) {
+      this.badRequest('defaultGoalProcessId requires a goalId owned by the current user');
+    }
     await this.db
       .update(projects)
       .set({
         title: input.title ?? row.title,
-        goalId: input.goalId === undefined ? row.goalId : input.goalId,
-        defaultGoalProcessId: input.defaultGoalProcessId === undefined
-          ? row.defaultGoalProcessId
-          : input.defaultGoalProcessId,
+        goalId: nextGoalId,
+        defaultGoalProcessId: nextProcessId,
         color: input.color ?? row.color,
         lifeArea: input.lifeArea ?? row.lifeArea,
         description: input.description ?? row.description,
@@ -487,19 +536,17 @@ export class PlannerV2Service {
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
-      .where(eq(projects.id, id));
+      .where(and(eq(projects.id, id), eq(projects.userId, userId)));
     const updated = await this.db.select().from(projects).where(eq(projects.id, id)).limit(1);
     return this.serializeProject(updated[0]!);
   }
 
-  async deleteProject(id: string) {
-    const current = await this.db.select().from(projects).where(eq(projects.id, id)).limit(1);
-    if (!current[0] || current[0].deletedAt) this.notFound('Project');
-    const row = current[0]!;
+  async deleteProject(userId: string, id: string) {
+    const row = await this.requireOwnedProject(userId, id);
     await this.db
       .update(tasks)
       .set({ projectId: null, updatedAt: new Date() })
-      .where(and(eq(tasks.projectId, id), isNull(tasks.deletedAt)));
+      .where(and(eq(tasks.projectId, id), eq(tasks.userId, userId), isNull(tasks.deletedAt)));
     await this.db
       .update(projects)
       .set({
@@ -508,16 +555,17 @@ export class PlannerV2Service {
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
-      .where(eq(projects.id, id));
+      .where(and(eq(projects.id, id), eq(projects.userId, userId)));
     return { id, deleted: true as const };
   }
 
-  async createGoal(input: CreateGoalInput) {
-    if (input.parentId) await this.requireGoal(input.parentId);
+  async createGoal(userId: string, input: CreateGoalInput) {
+    if (input.parentId) await this.requireOwnedGoal(userId, input.parentId);
     const id = randomUUID();
     const now = new Date();
     await this.db.insert(goals).values({
       id,
+      userId,
       title: input.title,
       lifeArea: input.lifeArea ?? 'LIFE',
       description: input.description ?? '',
@@ -548,11 +596,9 @@ export class PlannerV2Service {
     return this.serializeGoal(created[0]!);
   }
 
-  async patchGoal(id: string, input: PatchGoalInput) {
-    const current = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
-    if (!current[0] || current[0].deletedAt) this.notFound('Goal');
-    const row = current[0]!;
-    if (input.parentId) await this.requireGoal(input.parentId);
+  async patchGoal(userId: string, id: string, input: PatchGoalInput) {
+    const row = await this.requireOwnedGoal(userId, id);
+    if (input.parentId) await this.requireOwnedGoal(userId, input.parentId);
     await this.db
       .update(goals)
       .set({
@@ -598,19 +644,17 @@ export class PlannerV2Service {
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
-      .where(eq(goals.id, id));
+      .where(and(eq(goals.id, id), eq(goals.userId, userId)));
     const updated = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
     return this.serializeGoal(updated[0]!);
   }
 
-  async deleteGoal(id: string) {
-    const current = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
-    if (!current[0] || current[0].deletedAt) this.notFound('Goal');
-    const row = current[0]!;
+  async deleteGoal(userId: string, id: string) {
+    const row = await this.requireOwnedGoal(userId, id);
     await this.db
       .update(projects)
       .set({ goalId: null, updatedAt: new Date() })
-      .where(and(eq(projects.goalId, id), isNull(projects.deletedAt)));
+      .where(and(eq(projects.goalId, id), eq(projects.userId, userId), isNull(projects.deletedAt)));
     await this.db
       .update(goals)
       .set({
@@ -619,29 +663,37 @@ export class PlannerV2Service {
         revision: row.revision + 1,
         updatedAt: new Date(),
       })
-      .where(eq(goals.id, id));
+      .where(and(eq(goals.id, id), eq(goals.userId, userId)));
     return { id, deleted: true as const };
   }
 
-  async getGoalProgress(id: string, nowIso?: string) {
-    const goalRows = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
-    const goal = goalRows[0];
-    if (!goal || goal.deletedAt) this.notFound('Goal');
+  async getGoalProgress(userId: string, id: string, nowIso?: string) {
+    const goal = await this.requireOwnedGoal(userId, id);
 
     const linkedProjects = await this.db
       .select()
       .from(projects)
-      .where(and(eq(projects.goalId, id), isNull(projects.deletedAt)));
+      .where(and(eq(projects.userId, userId), eq(projects.goalId, id), isNull(projects.deletedAt)));
     const linkedProjectIds = new Set(linkedProjects.map((project) => project.id));
-    const taskRows = (await this.db.select().from(tasks).where(isNull(tasks.deletedAt)))
-      .filter((task) => task.goalId === id || (task.projectId ? linkedProjectIds.has(task.projectId) : false));
+    const taskRows = (
+      await this.db
+        .select()
+        .from(tasks)
+        .where(and(eq(tasks.userId, userId), isNull(tasks.deletedAt)))
+    ).filter((task) => task.goalId === id || (task.projectId ? linkedProjectIds.has(task.projectId) : false));
     const taskIds = taskRows.map((task) => task.id);
     const blockRows = taskIds.length === 0
       ? []
       : await this.db
         .select()
         .from(timeBlocks)
-        .where(and(inArray(timeBlocks.taskId, taskIds), isNull(timeBlocks.deletedAt)))
+        .where(
+          and(
+            eq(timeBlocks.userId, userId),
+            inArray(timeBlocks.taskId, taskIds),
+            isNull(timeBlocks.deletedAt),
+          ),
+        )
         .orderBy(asc(timeBlocks.startEpochMs));
 
     const progress = buildGoalProgress(
@@ -674,12 +726,13 @@ export class PlannerV2Service {
     };
   }
 
-  async retryCalendarSync(): Promise<{ attempted: number; synced: number; failed: number }> {
+  async retryCalendarSync(userId: string): Promise<{ attempted: number; synced: number; failed: number }> {
     const rows = await this.db
       .select({ id: timeBlocks.id })
       .from(timeBlocks)
       .where(
         and(
+          eq(timeBlocks.userId, userId),
           isNull(timeBlocks.deletedAt),
           inArray(timeBlocks.syncStatus, ['PENDING', 'FAILED']),
         ),
@@ -687,19 +740,25 @@ export class PlannerV2Service {
     let synced = 0;
     let failed = 0;
     for (const row of rows) {
-      const result = await this.syncBlock(row.id);
+      const result = await this.syncBlock(userId, row.id);
       if (result.syncStatus === 'SYNCED') synced += 1;
       else failed += 1;
     }
     return { attempted: rows.length, synced, failed };
   }
 
-  private async syncBlock(id: string) {
-    const rows = await this.db.select().from(timeBlocks).where(eq(timeBlocks.id, id)).limit(1);
-    const row = rows[0]!;
-    if (!this.calendar.upsertCosEvent) return this.serializeBlock(row);
+  private async syncBlock(userId: string, id: string) {
+    const rows = await this.db
+      .select()
+      .from(timeBlocks)
+      .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)))
+      .limit(1);
+    const row = rows[0];
+    if (!row || row.deletedAt) this.notFound('Time block');
+    const calendar = await this.calendarFor(userId);
+    if (!calendar.upsertCosEvent) return this.serializeBlock(row);
     try {
-      const googleEventId = await this.calendar.upsertCosEvent({
+      const googleEventId = await calendar.upsertCosEvent({
         eventId: row.googleEventId ?? undefined,
         title: row.title,
         startEpochMs: row.startEpochMs,
@@ -715,7 +774,7 @@ export class PlannerV2Service {
       await this.db
         .update(timeBlocks)
         .set({ googleEventId, syncStatus: 'SYNCED', updatedAt: new Date() })
-        .where(eq(timeBlocks.id, id));
+        .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)));
       return this.serializeBlock({ ...row, googleEventId, syncStatus: 'SYNCED' });
     } catch (err) {
       const safe = isGoogleCalendarError(err)
@@ -729,7 +788,7 @@ export class PlannerV2Service {
       await this.db
         .update(timeBlocks)
         .set({ syncStatus: 'FAILED', updatedAt: new Date() })
-        .where(eq(timeBlocks.id, id));
+        .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)));
       return this.serializeBlock({ ...row, syncStatus: 'FAILED' });
     }
   }
@@ -815,9 +874,51 @@ export class PlannerV2Service {
     };
   }
 
-  private async requireGoal(id: string) {
-    const rows = await this.db.select().from(goals).where(eq(goals.id, id)).limit(1);
+  private async requireOwnedGoal(userId: string, id: string) {
+    const rows = await this.db
+      .select()
+      .from(goals)
+      .where(and(eq(goals.id, id), eq(goals.userId, userId)))
+      .limit(1);
     if (!rows[0] || rows[0].deletedAt) this.notFound('Goal');
+    return rows[0];
+  }
+
+  private async requireOwnedProject(userId: string, id: string) {
+    const rows = await this.db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, id), eq(projects.userId, userId)))
+      .limit(1);
+    if (!rows[0] || rows[0].deletedAt) this.notFound('Project');
+    return rows[0];
+  }
+
+  private async requireOwnedTask(userId: string, id: string) {
+    const rows = await this.db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.id, id), eq(tasks.userId, userId)))
+      .limit(1);
+    if (!rows[0] || rows[0].deletedAt) this.notFound('Task');
+    return rows[0];
+  }
+
+  private async requireOwnedTimeBlock(userId: string, id: string) {
+    const rows = await this.db
+      .select()
+      .from(timeBlocks)
+      .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)))
+      .limit(1);
+    if (!rows[0] || rows[0].deletedAt) this.notFound('Time block');
+    return rows[0];
+  }
+
+  private requireProcessOnGoal(goal: typeof goals.$inferSelect, processId: string) {
+    const processes = parseGoalProcesses(goal.processesJson);
+    if (!processes.some((process) => process.id === processId)) {
+      this.notFound('Goal process');
+    }
   }
 
   private validateWindow(start: number, end: number) {
@@ -827,6 +928,10 @@ export class PlannerV2Service {
         code: 'INVALID_TIME_BLOCK',
       });
     }
+  }
+
+  private badRequest(message: string): never {
+    throw Object.assign(new Error(message), { statusCode: 400, code: 'INVALID_RELATION' });
   }
 
   private notFound(name: string): never {

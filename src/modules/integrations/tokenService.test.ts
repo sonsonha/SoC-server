@@ -5,11 +5,18 @@ describe('IntegrationTokenService.refreshGoogleAccessToken', () => {
   it('returns null on revoked refresh token instead of reusing the expired access token', async () => {
     const rows = [{
       id: 'tok-1',
+      userId: 'user-a',
       provider: 'google_calendar',
       accessTokenEnc: 'enc-access',
       refreshTokenEnc: 'enc-refresh',
       expiresAt: new Date(Date.now() - 60_000),
       scopes: 'https://www.googleapis.com/auth/calendar.events',
+      googleAccountSub: 'sub-a',
+      googleAccountEmail: 'a@example.com',
+      writeCalendarId: null,
+      status: 'connected',
+      lastErrorCode: null,
+      lastSyncAt: null,
       updatedAt: new Date(),
     }];
     const db = {
@@ -39,7 +46,7 @@ describe('IntegrationTokenService.refreshGoogleAccessToken', () => {
     ) as typeof fetch;
 
     const service = new IntegrationTokenService(db as never, 'test-encryption-key');
-    const result = await service.refreshGoogleAccessToken({
+    const result = await service.refreshGoogleAccessToken('user-a', {
       clientId: 'client',
       clientSecret: 'secret',
     });

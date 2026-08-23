@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from '../../infrastructure/db/client.js';
+import { resolveLegacyPlannerOwnerUserId } from '../identity/legacyPlannerOwner.js';
 import {
   dailyPlans,
   learningItems,
@@ -404,10 +405,12 @@ export class LearningCurriculumService {
         set: { title: track.title, updatedAt: now, deletedAt: null },
       });
 
+    const ownerUserId = await resolveLegacyPlannerOwnerUserId(this.db);
     await this.db
       .insert(tasks)
       .values({
         id: taskId,
+        userId: ownerUserId,
         title: track.title,
         description: `learning_track:${track.id}`,
         projectId: null,

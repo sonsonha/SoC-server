@@ -23,14 +23,14 @@ import {
   createDistanceMatrixProvider,
 } from './infrastructure/providers/maps/index.js';
 import { FakeCalendarProvider } from './infrastructure/providers/calendar/fakeCalendarProvider.js';
-import {
-  GoogleCalendarProvider,
-  parseConfiguredReadCalendarIds,
-} from './infrastructure/providers/calendar/googleCalendarProvider.js';
 import { isGoogleCalendarError } from './infrastructure/providers/calendar/googleErrors.js';
+import { IdentityService, parseAllowedEmails } from './modules/identity/identityService.js';
+import { identityAuthRoutes } from './api/routes/identityAuth.js';
 import type { CalendarProvider } from './infrastructure/providers/calendar/types.js';
 import { IntegrationTokenService } from './modules/integrations/tokenService.js';
 import { CalendarPullService } from './modules/integrations/calendarPullService.js';
+import { OAuthConnectionStateService } from './modules/integrations/oauthConnectionState.js';
+import { createUserCalendarProviderAsync } from './modules/integrations/userCalendarProvider.js';
 import { healthRoutes } from './api/routes/health.js';
 import { deviceRoutes } from './api/routes/device.js';
 import { syncRoutes } from './api/routes/sync.js';
@@ -158,44 +158,29 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   const encryptionKey =
     deps.config.INTEGRATION_ENCRYPTION_KEY ?? deps.config.DEVICE_AUTH_PEPPER;
   const tokenService = new IntegrationTokenService(deps.db, encryptionKey);
+  const identityService = new IdentityService(
+    deps.db,
+    parseAllowedEmails(deps.config.PERSONAL_OS_ALLOWED_EMAILS),
+    deps.config.PERSONAL_OS_INITIAL_OWNER_EMAIL?.trim() || undefined,
+  );
 
   const sharedFakeCalendar = new FakeCalendarProvider();
-  const calendarProvider: CalendarProvider =
-    deps.calendarProvider ??
-    (deps.config.USE_FAKE_PROVIDERS || !deps.config.GOOGLE_OAUTH_CLIENT_ID
-      ? sharedFakeCalendar
-      : new GoogleCalendarProvider(
-          async () => {
-            const t = await tokenService.getGoogleCalendarTokens();
-            if (!t) return null;
-            return {
-              accessToken: t.accessToken,
-              refreshToken: t.refreshToken,
-              expiresAt: t.expiresAt,
-            };
-          },
-          async () => {
-            const t = await tokenService.refreshGoogleAccessToken({
-              clientId: deps.config.GOOGLE_OAUTH_CLIENT_ID,
-              clientSecret: deps.config.GOOGLE_OAUTH_CLIENT_SECRET,
-            });
-            if (!t) return null;
-            return {
-              accessToken: t.accessToken,
-              refreshToken: t.refreshToken,
-              expiresAt: t.expiresAt,
-            };
-          },
-          deps.config.GOOGLE_COS_CALENDAR_ID,
-          parseConfiguredReadCalendarIds(deps.config.GOOGLE_READ_CALENDAR_IDS),
-        ));
+  const resolveUserCalendar = async (userId: string): Promise<CalendarProvider> => {
+    if (deps.calendarProvider) return deps.calendarProvider;
+    return createUserCalendarProviderAsync({
+      userId,
+      tokenService,
+      config: deps.config,
+      fake: sharedFakeCalendar,
+    });
+  };
 
   const calendarPull = new CalendarPullService(
     deps.db,
-    calendarProvider,
+    resolveUserCalendar,
     jobQueue,
     notificationService,
-    () => tokenService.isGoogleCalendarConnected(),
+    (userId) => tokenService.isGoogleCalendarConnected(userId),
   );
 
   const deviceService = new DeviceService(deps.db, deps.config.DEVICE_AUTH_PEPPER);
@@ -210,7 +195,38 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   preparationService.setNotificationService(notificationService);
   const planService = new PlanService(deps.db, jobQueue);
   planService.setNotificationService(notificationService);
-  planService.setCalendarProvider(calendarProvider);
+  if (deps.calendarProvider) {
+    planService.setCalendarProvider(deps.calendarProvider);
+  } else {
+    // Legacy V1 COS plan sync uses initial owner calendar when configured.
+    planService.setCalendarProvider({
+      listEvents: async (from, to) => {
+        const owner = await identityService.resolveInitialOwnerUser();
+        if (!owner) return [];
+        const cal = await resolveUserCalendar(owner.id);
+        return cal.listEvents(from, to);
+      },
+      listCosEvents: async (from, to) => {
+        const owner = await identityService.resolveInitialOwnerUser();
+        if (!owner) return [];
+        const cal = await resolveUserCalendar(owner.id);
+        return cal.listCosEvents?.(from, to) ?? [];
+      },
+      upsertCosEvent: async (event) => {
+        const owner = await identityService.resolveInitialOwnerUser();
+        if (!owner) throw new Error('PERSONAL_OS_INITIAL_OWNER_EMAIL required for V1 COS sync');
+        const cal = await resolveUserCalendar(owner.id);
+        if (!cal.upsertCosEvent) throw new Error('Calendar write unavailable');
+        return cal.upsertCosEvent(event);
+      },
+      deleteCosEvent: async (eventId) => {
+        const owner = await identityService.resolveInitialOwnerUser();
+        if (!owner) return;
+        const cal = await resolveUserCalendar(owner.id);
+        await cal.deleteCosEvent?.(eventId);
+      },
+    });
+  }
   jobQueue.setDatabase(deps.db);
   const weeklyPlanService = new WeeklyPlanService(deps.db, jobQueue, planService);
   const goalPlanningService = new GoalPlanningService(deps.db);
@@ -227,7 +243,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   const weekService = new WeekService(deps.db);
   const scanService = new ProactiveScanService(deps.db, jobQueue, notificationService);
   const learningService = new LearningCurriculumService(deps.db, jobQueue);
-  const plannerV2Service = new PlannerV2Service(deps.db, calendarProvider);
+  const plannerV2Service = new PlannerV2Service(deps.db, resolveUserCalendar);
   scanService.setLearningService(learningService);
   completionService.setLearningService(learningService);
 
@@ -285,8 +301,27 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   });
 
   jobQueue.register('calendar.pull', async () => {
-    const summary = await calendarPull.pull();
-    if (summary.connected) await plannerV2Service.retryCalendarSync();
+    // Per-user sync — iterate connected integrations (not a single-user global pull).
+    const userIds = await tokenService.listConnectedUserIds();
+    for (const userId of userIds) {
+      try {
+        const summary = await calendarPull.pull(userId);
+        if (summary.connected) {
+          await plannerV2Service.retryCalendarSync(userId);
+          await tokenService.touchLastSync(userId);
+        } else if (summary.reconnectRequired) {
+          await tokenService.markReconnectRequired(
+            userId,
+            summary.errorCode ?? 'GOOGLE_RECONNECT_REQUIRED',
+          );
+        }
+      } catch (err) {
+        console.error('calendar.pull user failed', {
+          userId,
+          message: err instanceof Error ? err.message : 'unknown',
+        });
+      }
+    }
   });
 
   await healthRoutes(app);
@@ -311,19 +346,27 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   await weekRoutes(app, { deviceService, weekService });
   await learningRoutes(app, { deviceService, learningService });
   await proactiveRoutes(app, { deviceService, scanService });
+  const oauthStates = new OAuthConnectionStateService(deps.db);
   await integrationRoutes(app, {
     deviceService,
     config: deps.config,
     tokenService,
     calendarPull,
-    calendarProvider,
     plannerV2: plannerV2Service,
     db: deps.db,
+    identity: identityService,
+    oauthStates,
+  });
+  await identityAuthRoutes(app, {
+    deviceService,
+    config: deps.config,
+    identity: identityService,
   });
   await plannerV2Routes(app, {
     deviceService,
     planner: plannerV2Service,
     webToken: deps.config.PLANNER_WEB_TOKEN,
+    identity: identityService,
   });
 
   if (deps.config.WORKER_ENABLED) {
@@ -349,7 +392,8 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     jobQueue,
     notificationService,
     pushProvider,
-    calendarProvider,
+    /** @deprecated Prefer resolveUserCalendar; exposed for legacy tests as owner/fake. */
+    calendarProvider: deps.calendarProvider ?? sharedFakeCalendar,
     weeklyPlanService,
     planningScheduler,
   };

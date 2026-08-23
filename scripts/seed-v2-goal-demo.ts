@@ -19,8 +19,11 @@ import {
   projects,
   tasks,
   timeBlocks,
+  users,
 } from '../src/infrastructure/db/schema/index.js';
 import { wipePlannerWork } from './wipePlannerWork.js';
+import { findUserByEmail } from '../src/modules/identity/plannerOwnership.js';
+import { randomUUID } from 'node:crypto';
 
 const RESET = process.argv.includes('--reset');
 const SEED = 'v2demo';
@@ -46,6 +49,9 @@ function weekMonday(offset: number) {
 
 const NOW_MS = vn(2026, 8, 18, 14, 0);
 const now = new Date(NOW_MS);
+
+/** Set in main() before building rows — never hardcode production owner id. */
+let SEED_USER_ID = '';
 
 // ── Goal IDs ────────────────────────────────────────────────────────────────
 
@@ -92,6 +98,7 @@ function makeTask(
 ) {
   return {
     id: sid(id),
+    userId: SEED_USER_ID,
     title,
     description: '',
     projectId: opts.projectId ?? null,
@@ -133,6 +140,7 @@ function makeBlock(
 ) {
   return {
     id: sid(id),
+    userId: SEED_USER_ID,
     taskId: sid(taskId),
     projectId: null,
     title,
@@ -174,6 +182,30 @@ async function main() {
   }
 
   console.log('Seeding v2 goal demo data…');
+
+  const ownerEmail =
+    process.env.PERSONAL_OS_INITIAL_OWNER_EMAIL?.trim()
+    || config.PERSONAL_OS_INITIAL_OWNER_EMAIL?.trim()
+    || 'dev-seed@example.com';
+  let owner = await findUserByEmail(db, ownerEmail);
+  if (!owner) {
+    const id = randomUUID();
+    await db.insert(users).values({
+      id,
+      googleSub: `seed-${id}`,
+      email: ownerEmail,
+      name: 'Dev seed owner',
+      avatarUrl: null,
+      createdAt: now,
+      updatedAt: now,
+      lastLoginAt: null,
+    });
+    owner = (await findUserByEmail(db, ownerEmail))!;
+    console.log(`Created seed owner user ${owner.email} (${owner.id})`);
+  } else {
+    console.log(`Using seed owner ${owner.email} (${owner.id})`);
+  }
+  SEED_USER_ID = owner.id;
 
   // Upsert helper: delete existing then insert
   async function upsert(table: any, rows: any[]) {
@@ -729,8 +761,9 @@ async function main() {
 
   // ── Write everything ──
 
-  await upsert(goals, [ieltsGoal, backendGoal, cvGoal, scholarshipGoal, noProcessGoal]);
-  await upsert(projects, [...ieltsProjects, ...beProjects, ...scholarshipProjects]);
+  const withOwner = <T extends Record<string, unknown>>(row: T) => ({ ...row, userId: SEED_USER_ID });
+  await upsert(goals, [ieltsGoal, backendGoal, cvGoal, scholarshipGoal, noProcessGoal].map(withOwner));
+  await upsert(projects, [...ieltsProjects, ...beProjects, ...scholarshipProjects].map(withOwner));
 
   const allTasks = [...ieltsTasks, ...beTasks, ...scholarshipTasks];
   const allBlocks = [...ieltsBlocks, ...beBlocks];

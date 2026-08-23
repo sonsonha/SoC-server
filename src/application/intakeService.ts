@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { eq, isNull } from 'drizzle-orm';
 import type { Db } from '../infrastructure/db/client.js';
+import { resolveLegacyPlannerOwnerUserId } from '../modules/identity/legacyPlannerOwner.js';
 import {
   inboxItems,
   learningItems,
@@ -506,6 +507,7 @@ export class IntakeService {
       });
 
       await this.db.insert(tasks).values({
+        userId: await resolveLegacyPlannerOwnerUserId(this.db),
         id: taskId,
         title,
         description: input.text,
@@ -554,6 +556,7 @@ export class IntakeService {
       const waitingTaskId = randomUUID();
       const waitingTitle = interpretation.waitingItem?.title ?? interpretation.title;
       await this.db.insert(tasks).values({
+        userId: await resolveLegacyPlannerOwnerUserId(this.db),
         id: waitingTaskId,
         title: interpretation.task?.title ?? waitingTitle,
         description: input.text,
@@ -634,6 +637,7 @@ export class IntakeService {
     } else if (interpretation.kind === 'TASK') {
       const minutes = interpretation.estimatedMinutes ?? 30;
       await this.db.insert(tasks).values({
+        userId: await resolveLegacyPlannerOwnerUserId(this.db),
         id: taskId,
         title: interpretation.title,
         description: input.text,
@@ -771,6 +775,7 @@ export class IntakeService {
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 15, 0, 0));
 
     await this.db.insert(tasks).values({
+        userId: await resolveLegacyPlannerOwnerUserId(this.db),
       id: taskId,
       title: `Research: ${oppTitle}`,
       description: input.text,
@@ -844,6 +849,7 @@ export class IntakeService {
     const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 16, 0, 0));
 
     await this.db.insert(tasks).values({
+        userId: await resolveLegacyPlannerOwnerUserId(this.db),
       id: taskId,
       title: question.slice(0, 80),
       description: input.text,
@@ -937,6 +943,7 @@ export class IntakeService {
     const start = this.nextSocialStart(now, interpretation.socialDatetimeHint ?? undefined);
 
     await this.db.insert(tasks).values({
+        userId: await resolveLegacyPlannerOwnerUserId(this.db),
       id: taskId,
       title: occasion.slice(0, 80),
       description: input.text,
