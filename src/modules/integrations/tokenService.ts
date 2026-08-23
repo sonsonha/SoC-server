@@ -95,7 +95,15 @@ export class IntegrationTokenService {
     clientSecret?: string;
   }): Promise<StoredTokens | null> {
     const current = await this.getGoogleCalendarTokens();
-    if (!current?.refreshToken || !config.clientId || !config.clientSecret) return current;
+    if (!current) return null;
+    if (!current.refreshToken || !config.clientId || !config.clientSecret) {
+      console.error('google.tokenRefresh skipped', {
+        hasRefreshToken: Boolean(current.refreshToken),
+        hasClientId: Boolean(config.clientId),
+        hasClientSecret: Boolean(config.clientSecret),
+      });
+      return null;
+    }
     const res = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -106,7 +114,26 @@ export class IntegrationTokenService {
         grant_type: 'refresh_token',
       }),
     });
-    if (!res.ok) return current;
+    if (!res.ok) {
+      const detail = await res.text();
+      let reason: string | undefined;
+      try {
+        const parsed = JSON.parse(detail) as { error?: string };
+        reason = typeof parsed.error === 'string' ? parsed.error : undefined;
+      } catch {
+        reason = undefined;
+      }
+      console.error('google.tokenRefresh failed', {
+        googleStatus: res.status,
+        reason: reason ?? null,
+      });
+      // Revoked / invalid refresh tokens require a full reconnect — do not keep
+      // serving the expired access token as if refresh succeeded.
+      if (res.status === 400 || res.status === 401) {
+        return null;
+      }
+      return current;
+    }
     const tokens = (await res.json()) as {
       access_token: string;
       expires_in?: number;

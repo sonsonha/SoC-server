@@ -1,13 +1,16 @@
 #!/usr/bin/env tsx
 /**
- * Development-only seed: creates two realistic Goals with full evidence chain.
- * Idempotent — safe to rerun (uses deterministic IDs based on SEED_PREFIX).
+ * Development-only seed: realistic V2 Goals with evidence from Tasks + Calendar.
+ * Wipes planner work first so reruns stay idempotent and do not keep test leftovers.
  *
  * Usage:
- *   npm run seed:v2-goal-demo          # seed data
- *   npm run seed:v2-goal-demo:reset    # remove seeded data
+ *   npm run seed:v2-goal-demo          # wipe planner work, then seed
+ *   npm run seed:v2-goal-demo:reset    # wipe planner work only
+ *   npm run dev:data:reset             # same wipe, no seed
  */
 import { inArray } from 'drizzle-orm';
+import { buildGoalProgress } from '../src/application/goalProgress.js';
+import { assertSafeDevelopmentDatabase } from '../src/application/devDataSafety.js';
 import { loadConfig } from '../src/config.js';
 import { createDb, closeDb } from '../src/infrastructure/db/client.js';
 import { runMigrations } from '../src/infrastructure/db/migrate.js';
@@ -17,6 +20,7 @@ import {
   tasks,
   timeBlocks,
 } from '../src/infrastructure/db/schema/index.js';
+import { wipePlannerWork } from './wipePlannerWork.js';
 
 const RESET = process.argv.includes('--reset');
 const SEED = 'v2demo';
@@ -48,6 +52,8 @@ const now = new Date(NOW_MS);
 const IELTS_GOAL_ID = sid('goal-ielts');
 const BACKEND_GOAL_ID = sid('goal-backend');
 const CV_GOAL_ID = sid('goal-cv-refresh');
+const SCHOLARSHIP_GOAL_ID = sid('goal-scholarship');
+const NO_PROCESS_GOAL_ID = sid('goal-no-process');
 
 // ── Process IDs (embedded in processesJson) ─────────────────────────────────
 
@@ -66,6 +72,7 @@ const IELTS_WRITING_PROJECT_ID = sid('proj-ielts-writing');
 const BE_APPS_PROJECT_ID = sid('proj-be-apps');
 const BE_INTERVIEW_PROJECT_ID = sid('proj-be-interview');
 const BE_CV_PROJECT_ID = sid('proj-be-cv');
+const SCHOLARSHIP_PROJECT_ID = sid('proj-scholarship');
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -92,7 +99,7 @@ function makeTask(
     goalProcessId: opts.goalProcessId ?? null,
     lifeArea: 'LEARNING',
     priority: 2,
-    deadlineEpochMs: opts.deadlineEpochMs ?? null,
+    deadlineEpochMs: opts.deadlineEpochMs ?? (opts.dueHorizon === 'WEEK' ? CURRENT_WEEK_MON : null),
     estimatedMinutes: opts.estimatedMinutes ?? 30,
     actualMinutes: null,
     energyRequirement: 2,
@@ -148,25 +155,20 @@ function makeBlock(
 
 async function main() {
   const config = loadConfig();
-  await runMigrations(config.databaseUrl);
-  const db = createDb(config.databaseUrl);
+  const target = assertSafeDevelopmentDatabase({
+    databaseUrl: config.DATABASE_URL,
+    nodeEnv: config.NODE_ENV,
+    railwayEnvironment: process.env.RAILWAY_ENVIRONMENT,
+    allowOverride: process.env.ALLOW_DEV_DATA_RESET,
+  });
+  await runMigrations(config.DATABASE_URL);
+  const db = createDb(config.DATABASE_URL);
 
-  const allSeedIds = (table: any) =>
-    db.select({ id: table.id }).from(table).then((rows: any[]) =>
-      rows.map((r: any) => r.id).filter((id: string) => id.startsWith(SEED + '-')),
-    );
+  console.log(`Wiping planner work on ${target.host}/${target.database} (schema and credentials kept)…`);
+  await wipePlannerWork(db);
+  console.log('Planner work tables are empty.');
 
   if (RESET) {
-    console.log('Resetting v2 goal demo data…');
-    const goalIds = await allSeedIds(goals);
-    const projectIds = await allSeedIds(projects);
-    const taskIds = await allSeedIds(tasks);
-    const blockIds = await allSeedIds(timeBlocks);
-    if (blockIds.length) await db.delete(timeBlocks).where(inArray(timeBlocks.id, blockIds));
-    if (taskIds.length) await db.delete(tasks).where(inArray(tasks.id, taskIds));
-    if (projectIds.length) await db.delete(projects).where(inArray(projects.id, projectIds));
-    if (goalIds.length) await db.delete(goals).where(inArray(goals.id, goalIds));
-    console.log(`Removed ${goalIds.length} goals, ${projectIds.length} projects, ${taskIds.length} tasks, ${blockIds.length} blocks.`);
     await closeDb();
     return;
   }
@@ -191,10 +193,10 @@ async function main() {
   ];
 
   const ieltsMilestones = [
-    { id: sid('ms-ielts-1'), title: 'Establish baseline — 5.5', status: 'DONE' },
-    { id: sid('ms-ielts-2'), title: 'Reach 6.0', status: 'DONE' },
-    { id: sid('ms-ielts-3'), title: 'Strengthen Speaking + Writing toward 6.5', status: 'ACTIVE' },
-    { id: sid('ms-ielts-4'), title: 'Reach 6.5', status: 'PENDING' },
+    { id: sid('ms-ielts-1'), title: 'Establish baseline — 5.5', status: 'done' },
+    { id: sid('ms-ielts-2'), title: 'Reach 6.0', status: 'done' },
+    { id: sid('ms-ielts-3'), title: 'Strengthen Speaking + Writing toward 6.5', status: 'current' },
+    { id: sid('ms-ielts-4'), title: 'Reach 6.5', status: 'pending' },
   ];
 
   const ieltsObservations = [
@@ -219,13 +221,13 @@ async function main() {
     outcome: 'Achieve an overall IELTS score of 6.5.',
     why: 'Improve English capability for international study, career and mobility opportunities.',
     metric: 'IELTS mock score',
-    focusType: 'FOCUS',
+    focusType: 'MAINTAIN',
     currentMilestoneId: sid('ms-ielts-3'),
     milestonesJson: JSON.stringify(ieltsMilestones),
     systemsJson: JSON.stringify([
-      { id: sid('sys-ielts-1'), description: 'Speaking practice 3×/week' },
-      { id: sid('sys-ielts-2'), description: 'Writing practice 2×/week' },
-      { id: sid('sys-ielts-3'), description: 'English study 3h/week' },
+      { id: sid('sys-ielts-1'), title: 'Speaking practice 3×/week' },
+      { id: sid('sys-ielts-2'), title: 'Writing practice 2×/week' },
+      { id: sid('sys-ielts-3'), title: 'English study 3h/week' },
     ]),
     outcomeStatus: 'ACTIVE',
     achievedAt: null,
@@ -324,23 +326,20 @@ async function main() {
     makeBlock('ielts-blk-3', 'ielts-study-3', vn(2026, 8, 22, 9, 0), vn(2026, 8, 22, 10, 0), 'IELTS review', 'PLANNED'),
   ];
 
-  // ── IELTS Historical Tasks (6 previous weeks) ──
-  // Pattern: weeks -7 to -2 relative to current week
-  // -7: met, -6: met, -5: met, -4: missed, -3: met, -2: met, -1: met
-  // Consistency lookback is 8 weeks (indices 0–7 = weeks -7 to current)
+  // ── IELTS Historical Tasks (8 previous weeks) ──
+  // Pattern: weeks -8 to -1. Week -4 missed. Current week is excluded from consistency.
 
-  for (let w = -7; w <= -1; w++) {
+  for (let w = -8; w <= -1; w++) {
     const wStart = weekMonday(w);
     const missed = w === -4;
     const suffix = `w${w}`;
 
-    // Speaking: 3/week target. If missed week, only 1 completed.
     const speakCount = missed ? 1 : 3;
     for (let i = 0; i < speakCount; i++) {
       const completedMs = wStart + i * 2 * 86_400_000 + 19 * H;
       ieltsTasks.push(makeTask(`ielts-hist-speak-${suffix}-${i}`, `Speaking practice ${suffix}#${i + 1}`, {
         projectId: IELTS_PROJECT_ID, goalId: IELTS_GOAL_ID, goalProcessId: IELTS_PROC_SPEAKING,
-        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK',
+        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK', deadlineEpochMs: wStart,
       }));
     }
 
@@ -349,7 +348,7 @@ async function main() {
       const completedMs = wStart + i * 3 * 86_400_000 + 20 * H;
       ieltsTasks.push(makeTask(`ielts-hist-write-${suffix}-${i}`, `Writing practice ${suffix}#${i + 1}`, {
         projectId: IELTS_WRITING_PROJECT_ID, goalId: IELTS_GOAL_ID, goalProcessId: IELTS_PROC_WRITING,
-        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK',
+        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK', deadlineEpochMs: wStart,
       }));
     }
 
@@ -361,7 +360,7 @@ async function main() {
       const taskSuffix = `ielts-hist-study-${suffix}-${i}`;
       ieltsTasks.push(makeTask(taskSuffix, `English study ${suffix}#${i + 1}`, {
         projectId: IELTS_PROJECT_ID, goalId: IELTS_GOAL_ID, goalProcessId: IELTS_PROC_STUDY,
-        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK', estimatedMinutes: 60,
+        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK', estimatedMinutes: 60, deadlineEpochMs: wStart,
       }));
       ieltsBlocks.push(makeBlock(`ielts-hist-blk-${suffix}-${i}`, taskSuffix, startMs, endMs, `English study ${suffix}#${i + 1}`));
     }
@@ -378,11 +377,11 @@ async function main() {
   ];
 
   const beMilestones = [
-    { id: sid('ms-be-1'), title: 'CV / profile ready', status: 'DONE' },
-    { id: sid('ms-be-2'), title: 'Application pipeline started', status: 'DONE' },
-    { id: sid('ms-be-3'), title: 'Interview pipeline', status: 'ACTIVE' },
-    { id: sid('ms-be-4'), title: 'Technical readiness proven', status: 'PENDING' },
-    { id: sid('ms-be-5'), title: 'Receive suitable offer', status: 'PENDING' },
+    { id: sid('ms-be-1'), title: 'CV / profile ready', status: 'done' },
+    { id: sid('ms-be-2'), title: 'Application pipeline started', status: 'done' },
+    { id: sid('ms-be-3'), title: 'Interview pipeline', status: 'current' },
+    { id: sid('ms-be-4'), title: 'Technical readiness proven', status: 'pending' },
+    { id: sid('ms-be-5'), title: 'Receive suitable offer', status: 'pending' },
   ];
 
   const beObservations = [
@@ -409,9 +408,9 @@ async function main() {
     currentMilestoneId: sid('ms-be-3'),
     milestonesJson: JSON.stringify(beMilestones),
     systemsJson: JSON.stringify([
-      { id: sid('sys-be-1'), description: '5 quality applications/week' },
-      { id: sid('sys-be-2'), description: '3h technical preparation/week' },
-      { id: sid('sys-be-3'), description: '1 mock interview/week' },
+      { id: sid('sys-be-1'), title: '5 quality applications/week' },
+      { id: sid('sys-be-2'), title: '3h technical preparation/week' },
+      { id: sid('sys-be-3'), title: '1 mock interview/week' },
     ]),
     outcomeStatus: 'ACTIVE',
     achievedAt: null,
@@ -542,7 +541,7 @@ async function main() {
       const completedMs = wStart + i * 86_400_000 + 10 * H;
       beTasks.push(makeTask(`be-hist-app-${suffix}-${i}`, `Application ${suffix}#${i + 1}`, {
         projectId: BE_APPS_PROJECT_ID, goalId: BACKEND_GOAL_ID, goalProcessId: BE_PROC_APPS,
-        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK',
+        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK', deadlineEpochMs: wStart,
       }));
     }
 
@@ -554,7 +553,7 @@ async function main() {
       const taskSuffix = `be-hist-tech-${suffix}-${i}`;
       beTasks.push(makeTask(taskSuffix, `Tech prep ${suffix}#${i + 1}`, {
         projectId: BE_INTERVIEW_PROJECT_ID, goalId: BACKEND_GOAL_ID, goalProcessId: BE_PROC_TECH,
-        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK', estimatedMinutes: 60,
+        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK', estimatedMinutes: 60, deadlineEpochMs: wStart,
       }));
       beBlocks.push(makeBlock(`be-hist-blk-${suffix}-${i}`, taskSuffix, startMs, endMs, `Tech prep ${suffix}#${i + 1}`));
     }
@@ -563,7 +562,7 @@ async function main() {
       const completedMs = wStart + 4 * 86_400_000 + 14 * H;
       beTasks.push(makeTask(`be-hist-mock-${suffix}`, `Mock interview ${suffix}`, {
         projectId: BE_INTERVIEW_PROJECT_ID, goalId: BACKEND_GOAL_ID, goalProcessId: BE_PROC_MOCK,
-        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK',
+        status: 'DONE', completedAtEpochMs: completedMs, dueHorizon: 'WEEK', deadlineEpochMs: wStart,
       }));
     }
   }
@@ -590,9 +589,9 @@ async function main() {
     focusType: 'FOCUS',
     currentMilestoneId: null,
     milestonesJson: JSON.stringify([
-      { id: sid('ms-cv-1'), title: 'Draft CV', status: 'DONE' },
-      { id: sid('ms-cv-2'), title: 'Peer review', status: 'DONE' },
-      { id: sid('ms-cv-3'), title: 'Final polish', status: 'DONE' },
+      { id: sid('ms-cv-1'), title: 'Draft CV', status: 'done' },
+      { id: sid('ms-cv-2'), title: 'Peer review', status: 'done' },
+      { id: sid('ms-cv-3'), title: 'Final polish', status: 'done' },
     ]),
     systemsJson: '[]',
     outcomeStatus: 'ACHIEVED_LATE',
@@ -618,9 +617,9 @@ async function main() {
       processSummary: [],
       consistency: { metWeeks: 0, totalWeeks: 0, threshold: 0.8 },
       milestones: [
-        { id: sid('ms-cv-1'), title: 'Draft CV', status: 'DONE' },
-        { id: sid('ms-cv-2'), title: 'Peer review', status: 'DONE' },
-        { id: sid('ms-cv-3'), title: 'Final polish', status: 'DONE' },
+        { id: sid('ms-cv-1'), title: 'Draft CV', status: 'done' },
+        { id: sid('ms-cv-2'), title: 'Peer review', status: 'done' },
+        { id: sid('ms-cv-3'), title: 'Final polish', status: 'done' },
       ],
       latestObservation: null,
     }),
@@ -629,23 +628,168 @@ async function main() {
     deletedAt: null,
   };
 
+  const scholarshipGoal = {
+    id: SCHOLARSHIP_GOAL_ID,
+    title: 'Scholarship',
+    lifeArea: 'LEARNING',
+    seasonId: null,
+    description: '',
+    horizon: 'YEAR',
+    status: 'ACTIVE',
+    targetDate: '2027-03-31',
+    parentId: null,
+    successCriteria: '',
+    capacityShare: null,
+    outcome: 'Submit one competitive scholarship application.',
+    why: 'Keep an international study path open without making it a Focus goal.',
+    metric: 'Applications submitted',
+    focusType: 'EXPLORE',
+    currentMilestoneId: sid('ms-sch-1'),
+    milestonesJson: JSON.stringify([
+      { id: sid('ms-sch-1'), title: 'Map 3 programs', status: 'current' },
+      { id: sid('ms-sch-2'), title: 'Submit one application', status: 'pending' },
+    ]),
+    systemsJson: '[]',
+    outcomeStatus: 'ACTIVE',
+    achievedAt: null,
+    closedAt: null,
+    processesJson: '[]',
+    metricObservationsJson: JSON.stringify([
+      { id: sid('obs-sch-1'), observedAt: '2026-08-01T00:00:00Z', value: 0, label: 'None submitted' },
+    ]),
+    reflectionJson: '{}',
+    reviewSnapshotJson: '{}',
+    revision: 1,
+    updatedAt: now,
+    deletedAt: null,
+  };
+
+  const scholarshipProjects = [
+    {
+      id: SCHOLARSHIP_PROJECT_ID,
+      title: 'Scholarship Research',
+      goalId: SCHOLARSHIP_GOAL_ID,
+      defaultGoalProcessId: null,
+      color: '#0EA5E9',
+      lifeArea: 'LEARNING',
+      description: 'Light research only — not a recurring process.',
+      targetDate: '2027-03-31',
+      active: true,
+      revision: 1,
+      updatedAt: now,
+      deletedAt: null,
+    },
+  ];
+
+  const scholarshipTasks = [
+    makeTask('sch-done', 'Skim Chevening eligibility notes', {
+      projectId: SCHOLARSHIP_PROJECT_ID, goalId: SCHOLARSHIP_GOAL_ID,
+      status: 'DONE', completedAtEpochMs: vn(2026, 8, 10, 16, 0), dueHorizon: 'WEEK',
+      deadlineEpochMs: vn(2026, 8, 10),
+    }),
+    makeTask('sch-open', 'Shortlist 3 scholarship programs', {
+      projectId: SCHOLARSHIP_PROJECT_ID, goalId: SCHOLARSHIP_GOAL_ID,
+      status: 'TODO', dueHorizon: 'WEEK',
+    }),
+  ];
+
+  const noProcessGoal = {
+    id: NO_PROCESS_GOAL_ID,
+    title: 'Move to a quieter apartment',
+    lifeArea: 'HEALTH',
+    seasonId: null,
+    description: '',
+    horizon: 'QUARTER',
+    status: 'ACTIVE',
+    targetDate: '2026-12-15',
+    parentId: null,
+    successCriteria: '',
+    capacityShare: null,
+    outcome: 'Sign a lease in a quieter neighborhood.',
+    why: 'Protect sleep and deep work. No weekly process — outcome and milestone only.',
+    metric: 'Lease signed',
+    focusType: 'MAINTAIN',
+    currentMilestoneId: sid('ms-apt-1'),
+    milestonesJson: JSON.stringify([
+      { id: sid('ms-apt-1'), title: 'Decide neighborhood', status: 'current' },
+      { id: sid('ms-apt-2'), title: 'Sign lease', status: 'pending' },
+    ]),
+    systemsJson: '[]',
+    outcomeStatus: 'ACTIVE',
+    achievedAt: null,
+    closedAt: null,
+    processesJson: '[]',
+    metricObservationsJson: '[]',
+    reflectionJson: '{}',
+    reviewSnapshotJson: '{}',
+    revision: 1,
+    updatedAt: now,
+    deletedAt: null,
+  };
+
   // ── Write everything ──
 
-  await upsert(goals, [ieltsGoal, backendGoal, cvGoal]);
-  await upsert(projects, [...ieltsProjects, ...beProjects]);
+  await upsert(goals, [ieltsGoal, backendGoal, cvGoal, scholarshipGoal, noProcessGoal]);
+  await upsert(projects, [...ieltsProjects, ...beProjects, ...scholarshipProjects]);
 
-  const allTasks = [...ieltsTasks, ...beTasks];
+  const allTasks = [...ieltsTasks, ...beTasks, ...scholarshipTasks];
   const allBlocks = [...ieltsBlocks, ...beBlocks];
 
   await upsert(tasks, allTasks);
   await upsert(timeBlocks, allBlocks);
 
+  const asEvidence = (row: ReturnType<typeof makeTask>) => ({
+    id: row.id,
+    title: row.title,
+    goalId: row.goalId,
+    goalProcessId: row.goalProcessId,
+    projectId: row.projectId,
+    status: (row.status === 'DONE' ? 'DONE' : row.status === 'SCHEDULED' ? 'SCHEDULED' : 'INBOX') as 'DONE' | 'SCHEDULED' | 'INBOX',
+    dueAt: row.deadlineEpochMs ? new Date(row.deadlineEpochMs).toISOString() : null,
+    completedAt: row.completedAtEpochMs ? new Date(row.completedAtEpochMs).toISOString() : null,
+  });
+  const asBlock = (row: ReturnType<typeof makeBlock>) => ({
+    id: row.id,
+    taskId: row.taskId,
+    startAt: new Date(row.startEpochMs).toISOString(),
+    endAt: new Date(row.endEpochMs).toISOString(),
+    durationMinutes: Math.round((row.endEpochMs - row.startEpochMs) / 60_000),
+  });
+
+  const ieltsProgress = buildGoalProgress(ieltsProcesses as any, ieltsObservations, ieltsTasks.map(asEvidence), ieltsBlocks.map(asBlock), now);
+  const backendProgress = buildGoalProgress(beProcesses as any, beObservations, beTasks.map(asEvidence), beBlocks.map(asBlock), now);
+  const speaking = ieltsProgress.processes.find((item) => item.name === 'Speaking Practice')!.thisWeek;
+  const writing = ieltsProgress.processes.find((item) => item.name === 'Writing Practice')!.thisWeek;
+  const study = ieltsProgress.processes.find((item) => item.name === 'English Study')!.thisWeek;
+  const apps = backendProgress.processes.find((item) => item.name === 'Quality Applications')!.thisWeek;
+  const tech = backendProgress.processes.find((item) => item.name === 'Technical Preparation')!.thisWeek;
+  const mock = backendProgress.processes.find((item) => item.name === 'Mock Interview')!.thisWeek;
+
+  const failures: string[] = [];
+  if (speaking.completed !== 2 || speaking.target !== 3) failures.push(`IELTS Speaking expected 2/3, got ${speaking.completed}/${speaking.target}`);
+  if (writing.completed !== 1 || writing.target !== 2) failures.push(`IELTS Writing expected 1/2, got ${writing.completed}/${writing.target}`);
+  if (study.completed !== 2.5 || study.planned !== 3.5 || study.target !== 3) failures.push(`IELTS Study expected 2.5/3.5/3, got ${study.completed}/${study.planned}/${study.target}`);
+  if (apps.completed !== 4 || apps.target !== 5) failures.push(`Backend Applications expected 4/5, got ${apps.completed}/${apps.target}`);
+  if (tech.completed !== 3 || tech.planned !== 4 || tech.target !== 3) failures.push(`Backend Tech expected 3/4/3, got ${tech.completed}/${tech.planned}/${tech.target}`);
+  if (mock.completed !== 1 || mock.target !== 1) failures.push(`Backend Mock expected 1/1, got ${mock.completed}/${mock.target}`);
+  if (failures.length) {
+    throw new Error(`Seed aggregation check failed:\n${failures.join('\n')}`);
+  }
+
   console.log(`Seeded:`);
-  console.log(`  Goals:    3 (IELTS 6.5, Backend Job, CV Refresh)`);
-  console.log(`  Projects: ${ieltsProjects.length + beProjects.length}`);
+  console.log(`  Goals:    5 (Backend FOCUS, IELTS MAINTAIN, Scholarship EXPLORE, apartment no-process, CV ACHIEVED_LATE)`);
+  console.log(`  Projects: ${ieltsProjects.length + beProjects.length + scholarshipProjects.length}`);
   console.log(`  Tasks:    ${allTasks.length}`);
   console.log(`  Blocks:   ${allBlocks.length}`);
-  console.log(`  Historical weeks: IELTS 7 + Backend 8`);
+  console.log(`  Historical weeks: IELTS 8 + Backend 8 (completed; not current open work)`);
+  console.log(`  IELTS this week: Speaking ${speaking.completed}/${speaking.target}, Writing ${writing.completed}/${writing.target}, Study ${study.completed}h/${study.target}h planned ${study.planned}h`);
+  console.log(`  Backend this week: Apps ${apps.completed}/${apps.target}, Tech ${tech.completed}h/${tech.target}h planned ${tech.planned}h, Mock ${mock.completed}/${mock.target}`);
+
+  const leftover = (await db.select({ id: tasks.id, title: tasks.title }).from(tasks))
+    .filter((row) => !row.id.startsWith(`${SEED}-`));
+  if (leftover.length) {
+    throw new Error(`Seed left ${leftover.length} non-demo tasks: ${leftover.map((row) => row.title).join(', ')}`);
+  }
 
   await closeDb();
   console.log('Done.');

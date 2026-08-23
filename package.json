@@ -12,6 +12,7 @@
     "seed": "tsx scripts/seed-from-bootstrap.ts",
     "seed:v2-goal-demo": "tsx scripts/seed-v2-goal-demo.ts",
     "seed:v2-goal-demo:reset": "tsx scripts/seed-v2-goal-demo.ts --reset",
+    "dev:data:reset": "tsx scripts/dev-data-reset.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

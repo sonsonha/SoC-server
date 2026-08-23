@@ -117,32 +117,103 @@ export type GoalProgressResult = {
   };
 };
 
-function startOfDay(value: Date) {
-  const date = new Date(value);
-  date.setHours(0, 0, 0, 0);
-  return date;
+/** Product day/week boundaries use Asia/Ho_Chi_Minh (UTC+7, no DST). */
+export const PRODUCT_TZ_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+function zonedUtcParts(value: Date) {
+  const shifted = new Date(value.getTime() + PRODUCT_TZ_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth(),
+    day: shifted.getUTCDate(),
+    weekday: shifted.getUTCDay(),
+  };
 }
 
-function startOfWeek(value: Date) {
-  const date = startOfDay(value);
-  const day = date.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  date.setDate(date.getDate() + diff);
-  return date;
+export function startOfDay(value: Date) {
+  const parts = zonedUtcParts(value);
+  return new Date(Date.UTC(parts.year, parts.month, parts.day) - PRODUCT_TZ_OFFSET_MS);
+}
+
+export function startOfWeek(value: Date) {
+  const parts = zonedUtcParts(value);
+  const diff = parts.weekday === 0 ? -6 : 1 - parts.weekday;
+  return new Date(Date.UTC(parts.year, parts.month, parts.day + diff) - PRODUCT_TZ_OFFSET_MS);
 }
 
 function startOfMonth(value: Date) {
-  return new Date(value.getFullYear(), value.getMonth(), 1);
+  const parts = zonedUtcParts(value);
+  return new Date(Date.UTC(parts.year, parts.month, 1) - PRODUCT_TZ_OFFSET_MS);
 }
 
-function addDays(value: Date, amount: number) {
-  const date = new Date(value);
-  date.setDate(date.getDate() + amount);
-  return date;
+export function addDays(value: Date, amount: number) {
+  return new Date(value.getTime() + amount * 86_400_000);
+}
+
+function observationMonth(iso: string) {
+  return new Date(iso).toLocaleString('en-US', { month: 'long', timeZone: 'Asia/Ho_Chi_Minh' });
+}
+
+/** Factual insight only — no strategy/causality language. */
+export function buildInsightMessage(
+  processState: 'none' | 'strong' | 'mixed' | 'low',
+  observations: { observedAt: string; value: number }[],
+  metWeeks: number,
+  totalWeeks: number,
+) {
+  const parts: string[] = [];
+  if (processState !== 'none' && totalWeeks > 0) {
+    parts.push(`${metWeeks} of the last ${totalWeeks} weeks met the process threshold.`);
+  } else if (processState === 'none') {
+    parts.push('No recurring process is defined for this goal yet.');
+  }
+
+  const sorted = [...observations].sort(
+    (a, b) => new Date(a.observedAt).getTime() - new Date(b.observedAt).getTime(),
+  );
+  if (sorted.length === 0) return parts.join(' ');
+
+  const first = sorted[0]!;
+  const last = sorted.at(-1)!;
+  if (first.value === 0 && last.value === 0) {
+    parts.push('The target outcome has not been reached yet.');
+    return parts.join(' ');
+  }
+
+  let plateauFrom = last;
+  for (let index = sorted.length - 2; index >= 0; index -= 1) {
+    if (sorted[index]!.value === last.value) plateauFrom = sorted[index]!;
+    else break;
+  }
+  const lastTwoSame = sorted.length >= 2 && sorted.at(-2)!.value === last.value;
+  if (lastTwoSame && first.value !== last.value) {
+    parts.push(
+      `The outcome moved from ${first.value} to ${last.value} and has remained at ${last.value} since ${observationMonth(plateauFrom.observedAt)}.`,
+    );
+  } else if (lastTwoSame) {
+    parts.push(`The outcome has remained at ${last.value}.`);
+  } else {
+    parts.push(`The outcome moved from ${first.value} to ${last.value}.`);
+  }
+  return parts.join(' ');
 }
 
 function addMonths(value: Date, amount: number) {
-  return new Date(value.getFullYear(), value.getMonth() + amount, 1);
+  const parts = zonedUtcParts(value);
+  return new Date(Date.UTC(parts.year, parts.month + amount, 1) - PRODUCT_TZ_OFFSET_MS);
+}
+
+export function resolveEffectiveProcessId(
+  task: { goalProcessId: string | null; projectId: string | null },
+  projectDefaults: Map<string, string | null>,
+  allowedProcessIds: Set<string>,
+): string | null {
+  if (task.goalProcessId && allowedProcessIds.has(task.goalProcessId)) return task.goalProcessId;
+  if (task.projectId) {
+    const inherited = projectDefaults.get(task.projectId) ?? null;
+    if (inherited && allowedProcessIds.has(inherited)) return inherited;
+  }
+  return null;
 }
 
 function within(dateIso: string | null, start: Date, end: Date) {
@@ -196,6 +267,12 @@ function taskCompletedMinutes(task: GoalTaskEvidence, blocks: GoalBlockEvidence[
   return taskPlannedMinutes(task, blocks, start, end);
 }
 
+function taskInWindow(task: GoalTaskEvidence, blocks: GoalBlockEvidence[], start: Date, end: Date) {
+  if (within(task.completedAt, start, end)) return true;
+  if (within(task.dueAt, start, end)) return true;
+  return taskPlannedMinutes(task, blocks, start, end) > 0;
+}
+
 function computeBucket(
   process: GoalProcess,
   tasks: GoalTaskEvidence[],
@@ -216,28 +293,22 @@ function computeBucket(
     };
   }
 
-  const plannedTaskIds = new Set(
-    linkedTasks
-      .filter((task) => taskPlannedMinutes(task, blocks, start, end) > 0)
-      .map((task) => task.id),
-  );
-  const completedTaskIds = linkedTasks
-    .filter((task) => task.status === 'DONE' && within(task.completedAt, start, end))
-    .map((task) => task.id);
+  const plannedTasks = linkedTasks.filter((task) => taskInWindow(task, blocks, start, end));
+  const completedTasks = linkedTasks.filter((task) => task.status === 'DONE' && within(task.completedAt, start, end));
 
   if (process.measurementType === 'BINARY') {
     return {
       target,
-      planned: plannedTaskIds.size > 0 ? 1 : 0,
-      completed: completedTaskIds.length > 0 ? 1 : 0,
+      planned: plannedTasks.length > 0 ? 1 : 0,
+      completed: completedTasks.length > 0 ? 1 : 0,
       unit: process.unit,
     };
   }
 
   return {
     target,
-    planned: plannedTaskIds.size,
-    completed: completedTaskIds.length,
+    planned: plannedTasks.length,
+    completed: completedTasks.length,
     unit: process.unit,
   };
 }
@@ -248,8 +319,14 @@ export function buildGoalProgress(
   tasks: GoalTaskEvidence[],
   blocks: GoalBlockEvidence[],
   now: Date,
+  projectDefaults: Map<string, string | null> = new Map(),
 ): GoalProgressResult {
   const scoped = processes.filter((process) => process.active);
+  const allowedProcessIds = new Set(scoped.map((process) => process.id));
+  const associatedTasks = tasks.map((task) => ({
+    ...task,
+    goalProcessId: resolveEffectiveProcessId(task, projectDefaults, allowedProcessIds),
+  }));
   const processSummaries = scoped.map((process) => {
     const ranges = bucketsForProcess(process, now);
     return {
@@ -258,24 +335,28 @@ export function buildGoalProgress(
       measurementType: process.measurementType,
       period: process.period,
       unit: process.unit,
-      thisWeek: computeBucket(process, tasks, blocks, ranges.thisWeek.start, ranges.thisWeek.end),
-      thisMonth: computeBucket(process, tasks, blocks, ranges.thisMonth.start, ranges.thisMonth.end),
-      allTime: computeBucket(process, tasks, blocks, new Date(0), addDays(startOfDay(now), 1)),
+      thisWeek: computeBucket(process, associatedTasks, blocks, ranges.thisWeek.start, ranges.thisWeek.end),
+      thisMonth: computeBucket(process, associatedTasks, blocks, ranges.thisMonth.start, ranges.thisMonth.end),
+      allTime: computeBucket(process, associatedTasks, blocks, new Date(0), addDays(startOfDay(now), 1)),
     };
   });
 
   const threshold = 0.8;
-  const weeks = Array.from({ length: 8 }, (_, index) => {
-    const start = addDays(startOfWeek(now), (index - 7) * 7);
-    const end = addDays(start, 7);
-    const ratios = scoped.map((process) => ratio(computeBucket(process, tasks, blocks, start, end)));
-    const weekRatio = ratios.length ? ratios.reduce((sum, value) => sum + value, 0) / ratios.length : 0;
-    return {
-      startAt: start.toISOString(),
-      ratio: Math.round(weekRatio * 100) / 100,
-      met: ratios.length > 0 && weekRatio >= threshold,
-    };
-  });
+  // Last 8 completed weeks, excluding the in-progress current week.
+  // Goals with no process have no consistency window (not 0/8).
+  const weeks = scoped.length === 0
+    ? []
+    : Array.from({ length: 8 }, (_, index) => {
+      const start = addDays(startOfWeek(now), (index - 8) * 7);
+      const end = addDays(start, 7);
+      const ratios = scoped.map((process) => ratio(computeBucket(process, associatedTasks, blocks, start, end)));
+      const weekRatio = ratios.length ? ratios.reduce((sum, value) => sum + value, 0) / ratios.length : 0;
+      return {
+        startAt: start.toISOString(),
+        ratio: Math.round(weekRatio * 100) / 100,
+        met: ratios.length > 0 && weekRatio >= threshold,
+      };
+    });
 
   const sortedObservations = [...observations].sort((a, b) =>
     new Date(a.observedAt).getTime() - new Date(b.observedAt).getTime(),
@@ -301,17 +382,14 @@ export function buildGoalProgress(
         ? 'mixed'
         : 'low';
   const outcomeState = sortedObservations.length === 0 ? 'none' : observationTrend;
-  const message = processState === 'strong' && outcomeState === 'improving'
-    ? 'Current system appears to be producing progress.'
-    : processState === 'strong' && (outcomeState === 'stable' || outcomeState === 'declining')
-      ? 'Execution has been consistent, but the outcome metric has changed little.'
-      : processState === 'low' && (outcomeState === 'stable' || outcomeState === 'declining' || outcomeState === 'none')
-        ? 'The current system has not been executed consistently enough to evaluate it confidently.'
-        : processState === 'none'
-          ? 'No recurring process is defined for this goal yet.'
-          : 'Evidence is still accumulating.';
+  const message = buildInsightMessage(
+    processState,
+    sortedObservations,
+    weeks.filter((week) => week.met).length,
+    weeks.length,
+  );
 
-  const activity = tasks
+  const activity = associatedTasks
     .filter((task) => task.status === 'DONE' || blocks.some((block) => block.taskId === task.id))
     .map((task) => ({
       taskId: task.id,

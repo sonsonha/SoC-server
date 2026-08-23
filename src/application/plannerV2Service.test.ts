@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  normalizeMilestoneStatus,
   priorityFromDb,
   priorityToDb,
+  reconcileMilestones,
   taskStatusFromDb,
 } from './plannerV2Service.js';
 
@@ -27,5 +29,21 @@ describe('Planner V2 mappings', () => {
     expect(taskStatusFromDb('SCHEDULED')).toBe('SCHEDULED');
     expect(taskStatusFromDb('RESCHEDULED')).toBe('SCHEDULED');
     expect(taskStatusFromDb('DONE')).toBe('DONE');
+  });
+
+  it('normalizes milestone statuses and keeps currentMilestone consistent', () => {
+    expect(normalizeMilestoneStatus('DONE')).toBe('done');
+    expect(normalizeMilestoneStatus('ACTIVE')).toBe('current');
+    expect(normalizeMilestoneStatus('PENDING')).toBe('pending');
+    const reconciled = reconcileMilestones(
+      [
+        { id: 'm1', title: 'CV / profile ready', status: 'done' },
+        { id: 'm2', title: 'Application pipeline started', status: 'done' },
+        { id: 'm3', title: 'Interview pipeline', status: 'pending' },
+        { id: 'm4', title: 'Offer', status: 'pending' },
+      ],
+      'm3',
+    );
+    expect(reconciled.map((item) => item.status)).toEqual(['done', 'done', 'current', 'pending']);
   });
 });

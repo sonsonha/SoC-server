@@ -24,6 +24,7 @@ import {
 } from './infrastructure/providers/maps/index.js';
 import { FakeCalendarProvider } from './infrastructure/providers/calendar/fakeCalendarProvider.js';
 import { GoogleCalendarProvider } from './infrastructure/providers/calendar/googleCalendarProvider.js';
+import { isGoogleCalendarError } from './infrastructure/providers/calendar/googleErrors.js';
 import type { CalendarProvider } from './infrastructure/providers/calendar/types.js';
 import { IntegrationTokenService } from './modules/integrations/tokenService.js';
 import { CalendarPullService } from './modules/integrations/calendarPullService.js';
@@ -116,6 +117,11 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
 
   app.setErrorHandler((err: unknown, request, reply) => {
     request.log.error(err);
+    if (isGoogleCalendarError(err)) {
+      return reply.code(err.statusCode).send({
+        error: err.toJSON(),
+      });
+    }
     const error = err as { statusCode?: number; code?: string; name?: string; message?: string };
     const status = error.statusCode ?? 500;
     if (error.name === 'ZodError') {

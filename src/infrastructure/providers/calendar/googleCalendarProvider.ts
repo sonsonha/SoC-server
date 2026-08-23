@@ -1,5 +1,10 @@
 import type { CalendarEvent, CalendarProvider } from './types.js';
 import { FakeCalendarProvider } from './fakeCalendarProvider.js';
+import {
+  GoogleCalendarError,
+  googleErrorFromHttp,
+  parseGoogleErrorBody,
+} from './googleErrors.js';
 
 type TokenBundle = {
   accessToken: string;
@@ -7,12 +12,13 @@ type TokenBundle = {
   expiresAt?: Date | null;
 };
 
-const COS_CALENDAR_NAME = 'Personal Planner';
+const COS_CALENDAR_NAMES = ['Personal Planner', 'Personal Chief of Staff'] as const;
+const PLANNER_TZ = 'Asia/Ho_Chi_Minh';
 
 /**
  * Google Calendar adapter.
- * COS writes go to GOOGLE_COS_CALENDAR_ID, or a calendar named "Personal Chief of Staff"
- * (created if missing). Failures are logged — not silently treated as success.
+ * COS writes go to GOOGLE_COS_CALENDAR_ID, or a calendar named "Personal Planner"
+ * (also matches legacy "Personal Chief of Staff"; created if missing).
  */
 export class GoogleCalendarProvider implements CalendarProvider {
   private readonly fallback = new FakeCalendarProvider();
@@ -26,13 +32,36 @@ export class GoogleCalendarProvider implements CalendarProvider {
     if (cosCalendarId) this.resolvedCosCalendarId = cosCalendarId;
   }
 
-  private async bearer(): Promise<string | null> {
+  private async bearer(operation: string): Promise<string> {
     let tokens = await this.getTokens();
-    if (!tokens?.accessToken || tokens.accessToken === 'fake-access-token') return null;
-    if (tokens.expiresAt && tokens.expiresAt.getTime() < Date.now() + 60_000) {
-      tokens = (await this.refreshTokens()) ?? tokens;
+    if (!tokens?.accessToken || tokens.accessToken === 'fake-access-token') {
+      throw new GoogleCalendarError('Google Calendar is not connected', 'GOOGLE_NOT_CONNECTED', {
+        statusCode: 401,
+        operation,
+      });
     }
-    if (!tokens?.accessToken || tokens.accessToken === 'fake-access-token') return null;
+    if (tokens.expiresAt && tokens.expiresAt.getTime() < Date.now() + 60_000) {
+      const refreshed = await this.refreshTokens();
+      if (!refreshed?.accessToken || refreshed.accessToken === tokens.accessToken) {
+        // Refresh failed or returned the same expired token.
+        if (tokens.expiresAt.getTime() < Date.now()) {
+          throw new GoogleCalendarError(
+            'Google Calendar access expired — reconnect required',
+            'GOOGLE_RECONNECT_REQUIRED',
+            { statusCode: 401, reason: 'token_refresh_failed', operation },
+          );
+        }
+      } else {
+        tokens = refreshed;
+      }
+    }
+    if (!tokens?.accessToken || tokens.accessToken === 'fake-access-token') {
+      throw new GoogleCalendarError(
+        'Google Calendar access expired — reconnect required',
+        'GOOGLE_RECONNECT_REQUIRED',
+        { statusCode: 401, operation },
+      );
+    }
     return tokens.accessToken;
   }
 
@@ -41,6 +70,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
     calendarId: string,
     fromEpochMs: number,
     toEpochMs: number,
+    operation: string,
   ): Promise<CalendarEvent[]> {
     const events: CalendarEvent[] = [];
     let pageToken: string | undefined;
@@ -59,7 +89,11 @@ export class GoogleCalendarProvider implements CalendarProvider {
       });
       if (!res.ok) {
         const detail = await res.text();
-        throw new Error(`Google Calendar read failed: ${res.status} ${detail}`);
+        throw googleErrorFromHttp({
+          operation,
+          googleStatus: res.status,
+          detail,
+        });
       }
       const data = (await res.json()) as {
         nextPageToken?: string;
@@ -95,16 +129,21 @@ export class GoogleCalendarProvider implements CalendarProvider {
   }
 
   async listEvents(fromEpochMs: number, toEpochMs: number): Promise<CalendarEvent[]> {
-    const accessToken = await this.bearer();
-    if (!accessToken) return this.fallback.listEvents(fromEpochMs, toEpochMs);
-    return this.fetchEvents(accessToken, 'primary', fromEpochMs, toEpochMs);
+    try {
+      const accessToken = await this.bearer('listEvents');
+      return await this.fetchEvents(accessToken, 'primary', fromEpochMs, toEpochMs, 'listEvents');
+    } catch (err) {
+      if (err instanceof GoogleCalendarError && err.code === 'GOOGLE_NOT_CONNECTED') {
+        return this.fallback.listEvents(fromEpochMs, toEpochMs);
+      }
+      throw err;
+    }
   }
 
   async listCosEvents(fromEpochMs: number, toEpochMs: number): Promise<CalendarEvent[]> {
-    const accessToken = await this.bearer();
-    if (!accessToken) return [];
+    const accessToken = await this.bearer('listCosEvents');
     const calendarId = await this.ensureCosCalendarId(accessToken);
-    return this.fetchEvents(accessToken, calendarId, fromEpochMs, toEpochMs);
+    return this.fetchEvents(accessToken, calendarId, fromEpochMs, toEpochMs, 'listCosEvents');
   }
 
   /** Resolve or create the dedicated CoS write calendar. */
@@ -118,16 +157,27 @@ export class GoogleCalendarProvider implements CalendarProvider {
       const data = (await listRes.json()) as {
         items?: Array<{ id?: string; summary?: string }>;
       };
-      const match = (data.items ?? []).find(
-        (c) => c.summary?.toLowerCase() === COS_CALENDAR_NAME.toLowerCase(),
-      );
+      const names = new Set(COS_CALENDAR_NAMES.map((n) => n.toLowerCase()));
+      const match = (data.items ?? []).find((c) => c.summary && names.has(c.summary.toLowerCase()));
       if (match?.id) {
         this.resolvedCosCalendarId = match.id;
-        console.log('google.cosCalendar resolved', match.id);
+        console.info('google.cosCalendar resolved', { calendarId: match.id, summary: match.summary });
         return match.id;
       }
     } else {
-      console.error('google.calendarList failed', listRes.status, await listRes.text());
+      const detail = await listRes.text();
+      console.error('google.calendarList failed', {
+        googleStatus: listRes.status,
+        ...parseGoogleErrorBody(detail),
+      });
+      // Fall through to create — may also fail if scopes are insufficient.
+      if (listRes.status === 401 || listRes.status === 403) {
+        throw googleErrorFromHttp({
+          operation: 'ensureCosCalendarId.list',
+          googleStatus: listRes.status,
+          detail,
+        });
+      }
     }
 
     const createRes = await fetch('https://www.googleapis.com/calendar/v3/calendars', {
@@ -136,38 +186,61 @@ export class GoogleCalendarProvider implements CalendarProvider {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ summary: COS_CALENDAR_NAME, timeZone: 'Asia/Ho_Chi_Minh' }),
+      body: JSON.stringify({ summary: COS_CALENDAR_NAMES[0], timeZone: PLANNER_TZ }),
     });
     if (!createRes.ok) {
       const detail = await createRes.text();
-      throw new Error(`Could not create CoS calendar: ${createRes.status} ${detail}`);
+      console.error('google.cosCalendar create failed', {
+        googleStatus: createRes.status,
+        ...parseGoogleErrorBody(detail),
+      });
+      throw googleErrorFromHttp({
+        operation: 'ensureCosCalendarId.create',
+        googleStatus: createRes.status,
+        detail,
+      });
     }
     const created = (await createRes.json()) as { id?: string };
-    if (!created.id) throw new Error('Google created calendar without id');
+    if (!created.id) {
+      throw new GoogleCalendarError(
+        'Google created calendar without id',
+        'GOOGLE_UNKNOWN',
+        { statusCode: 502, operation: 'ensureCosCalendarId.create' },
+      );
+    }
     this.resolvedCosCalendarId = created.id;
-    console.log('google.cosCalendar created', created.id);
+    console.info('google.cosCalendar created', { calendarId: created.id });
     return created.id;
+  }
+
+  private eventBody(event: Omit<CalendarEvent, 'eventId'> & { eventId?: string }) {
+    return {
+      summary: event.title,
+      start: {
+        dateTime: new Date(event.startEpochMs).toISOString(),
+        timeZone: PLANNER_TZ,
+      },
+      end: {
+        dateTime: new Date(event.endEpochMs).toISOString(),
+        timeZone: PLANNER_TZ,
+      },
+      location: event.location ?? undefined,
+      extendedProperties: event.appMetadata
+        ? { private: event.appMetadata }
+        : undefined,
+    };
   }
 
   async upsertCosEvent(
     event: Omit<CalendarEvent, 'eventId'> & { eventId?: string },
   ): Promise<string> {
-    const accessToken = await this.bearer();
-    if (!accessToken) {
-      throw new Error('Google Calendar is not connected');
-    }
+    const accessToken = await this.bearer('upsertCosEvent');
+    const timeBlockId = event.appMetadata?.timeBlockId;
+    const hasGoogleEventId = Boolean(event.eventId && !event.eventId.startsWith('cos-'));
 
     try {
       const calendarId = await this.ensureCosCalendarId(accessToken);
-      const body = {
-        summary: event.title,
-        start: { dateTime: new Date(event.startEpochMs).toISOString() },
-        end: { dateTime: new Date(event.endEpochMs).toISOString() },
-        location: event.location ?? undefined,
-        extendedProperties: event.appMetadata
-          ? { private: event.appMetadata }
-          : undefined,
-      };
+      const body = this.eventBody(event);
       const existingId = event.eventId?.startsWith('cos-') ? undefined : event.eventId;
       const createUrl =
         `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`;
@@ -186,6 +259,11 @@ export class GoogleCalendarProvider implements CalendarProvider {
       // move the still-local block before pulling, recreate it instead of
       // leaving the block permanently FAILED.
       if (existingId && (res.status === 404 || res.status === 410)) {
+        console.info('google.upsertCosEvent stale id — recreating', {
+          timeBlockId: timeBlockId ?? null,
+          hasGoogleEventId: true,
+          googleStatus: res.status,
+        });
         res = await fetch(createUrl, {
           method: 'POST',
           headers: {
@@ -197,15 +275,32 @@ export class GoogleCalendarProvider implements CalendarProvider {
       }
       if (!res.ok) {
         const detail = await res.text();
-        console.error('google.upsertCosEvent failed', res.status, detail);
-        throw new Error(`Google Calendar write failed: ${res.status} ${detail}`);
+        const err = googleErrorFromHttp({
+          operation: existingId ? 'upsertCosEvent.patch' : 'upsertCosEvent.create',
+          googleStatus: res.status,
+          detail,
+          timeBlockId,
+          hasGoogleEventId,
+        });
+        console.error('google.upsertCosEvent failed', err.toLogFields());
+        throw err;
       }
       const data = (await res.json()) as { id?: string };
       const id = data.id ?? existingId ?? `cos-${event.startEpochMs}`;
-      console.log('google.upsertCosEvent ok', { id, title: event.title });
+      console.info('google.upsertCosEvent ok', {
+        id,
+        timeBlockId: timeBlockId ?? null,
+        hasGoogleEventId,
+        operation: existingId ? 'update' : 'create',
+      });
       return id;
     } catch (err) {
-      console.error('google.upsertCosEvent error', err);
+      if (err instanceof GoogleCalendarError) throw err;
+      console.error('google.upsertCosEvent error', {
+        timeBlockId: timeBlockId ?? null,
+        hasGoogleEventId,
+        message: err instanceof Error ? err.message : 'unknown',
+      });
       throw err;
     }
   }
@@ -215,10 +310,15 @@ export class GoogleCalendarProvider implements CalendarProvider {
       await this.fallback.deleteCosEvent!(eventId);
       return;
     }
-    const accessToken = await this.bearer();
-    if (!accessToken) {
-      await this.fallback.deleteCosEvent!(eventId);
-      return;
+    let accessToken: string;
+    try {
+      accessToken = await this.bearer('deleteCosEvent');
+    } catch (err) {
+      if (err instanceof GoogleCalendarError && err.code === 'GOOGLE_NOT_CONNECTED') {
+        await this.fallback.deleteCosEvent!(eventId);
+        return;
+      }
+      throw err;
     }
     try {
       const calendarId = await this.ensureCosCalendarId(accessToken);
@@ -227,11 +327,25 @@ export class GoogleCalendarProvider implements CalendarProvider {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      if (!res.ok && res.status !== 204 && res.status !== 404) {
-        console.error('google.deleteCosEvent failed', res.status, await res.text());
+      if (!res.ok && res.status !== 204 && res.status !== 404 && res.status !== 410) {
+        const detail = await res.text();
+        console.error(
+          'google.deleteCosEvent failed',
+          googleErrorFromHttp({
+            operation: 'deleteCosEvent',
+            googleStatus: res.status,
+            detail,
+            hasGoogleEventId: true,
+          }).toLogFields(),
+        );
+      } else {
+        console.info('google.deleteCosEvent ok', { googleStatus: res.status, hasGoogleEventId: true });
       }
     } catch (err) {
-      console.error('google.deleteCosEvent error', err);
+      console.error('google.deleteCosEvent error', {
+        hasGoogleEventId: true,
+        message: err instanceof Error ? err.message : 'unknown',
+      });
     }
   }
 }

@@ -9,6 +9,7 @@ import {
   timeBlocks,
 } from '../infrastructure/db/schema/index.js';
 import type { CalendarProvider } from '../infrastructure/providers/calendar/types.js';
+import { isGoogleCalendarError } from '../infrastructure/providers/calendar/googleErrors.js';
 import {
   buildGoalProgress,
   type GoalMetricObservation,
@@ -67,9 +68,39 @@ function parseJsonValue<T>(raw: string | null | undefined, fallback: T): T {
   }
 }
 
-export function parseGoalMilestones(raw: string | null | undefined): GoalMilestone[] {
+export function normalizeMilestoneStatus(status: string | null | undefined): GoalMilestone['status'] {
+  const value = (status ?? '').toLowerCase();
+  if (value === 'done' || value === 'completed') return 'done';
+  if (value === 'current' || value === 'active') return 'current';
+  return 'pending';
+}
+
+export function reconcileMilestones(
+  milestones: GoalMilestone[],
+  currentMilestoneId?: string | null,
+): GoalMilestone[] {
+  const normalized = milestones.map((milestone) => ({
+    ...milestone,
+    status: normalizeMilestoneStatus(milestone.status),
+  }));
+  if (!currentMilestoneId) return normalized;
+  return normalized.map((milestone) => ({
+    ...milestone,
+    status: milestone.id === currentMilestoneId
+      ? 'current'
+      : milestone.status === 'done'
+        ? 'done'
+        : 'pending',
+  }));
+}
+
+export function parseGoalMilestones(
+  raw: string | null | undefined,
+  currentMilestoneId?: string | null,
+): GoalMilestone[] {
   const parsed = parseJsonValue<GoalMilestone[] | null>(raw, []);
-  return Array.isArray(parsed) ? parsed : [];
+  const milestones = Array.isArray(parsed) ? parsed : [];
+  return reconcileMilestones(milestones, currentMilestoneId);
 }
 
 export function parseGoalSystems(raw: string | null | undefined): GoalSystem[] {
@@ -226,6 +257,17 @@ export class PlannerV2Service {
 
   async createTask(input: CreateTaskInput) {
     if (input.goalId) await this.requireGoal(input.goalId);
+    let goalId = input.goalId ?? null;
+    let goalProcessId = input.goalProcessId ?? null;
+    if (input.projectId) {
+      const projectRows = await this.db.select().from(projects).where(eq(projects.id, input.projectId)).limit(1);
+      const project = projectRows[0];
+      if (project && !project.deletedAt) {
+        if (!goalId) goalId = project.goalId;
+        if (!goalProcessId) goalProcessId = project.defaultGoalProcessId;
+      }
+    }
+    if (goalId) await this.requireGoal(goalId);
     const id = randomUUID();
     const now = new Date();
     await this.db.insert(tasks).values({
@@ -233,8 +275,8 @@ export class PlannerV2Service {
       title: input.title,
       description: input.notes ?? '',
       projectId: input.projectId ?? null,
-      goalId: input.goalId ?? null,
-      goalProcessId: input.goalProcessId ?? null,
+      goalId,
+      goalProcessId,
       lifeArea: 'LIFE',
       priority: priorityToDb(input.priority ?? 'NORMAL'),
       deadlineEpochMs: input.dueAt ? new Date(input.dueAt).getTime() : null,
@@ -492,7 +534,7 @@ export class PlannerV2Service {
       achievedAt: input.achievedAt ?? null,
       closedAt: input.closedAt ?? null,
       currentMilestoneId: input.currentMilestoneId ?? null,
-      milestonesJson: JSON.stringify(input.milestones ?? []),
+      milestonesJson: JSON.stringify(reconcileMilestones(input.milestones ?? [], input.currentMilestoneId)),
       systemsJson: JSON.stringify(input.systems ?? []),
       processesJson: JSON.stringify(input.processes ?? []),
       metricObservationsJson: JSON.stringify(input.metricObservations ?? []),
@@ -534,7 +576,10 @@ export class PlannerV2Service {
           : input.currentMilestoneId,
         milestonesJson: input.milestones === undefined
           ? row.milestonesJson
-          : JSON.stringify(input.milestones),
+          : JSON.stringify(reconcileMilestones(
+            input.milestones,
+            input.currentMilestoneId === undefined ? row.currentMilestoneId : input.currentMilestoneId,
+          )),
         systemsJson: input.systems === undefined
           ? row.systemsJson
           : JSON.stringify(input.systems),
@@ -620,6 +665,7 @@ export class PlannerV2Service {
         durationMinutes: Math.round((block.endEpochMs - block.startEpochMs) / 60_000),
       })),
       nowIso ? new Date(nowIso) : new Date(),
+      new Map(linkedProjects.map((project) => [project.id, project.defaultGoalProcessId])),
     );
 
     return {
@@ -671,7 +717,15 @@ export class PlannerV2Service {
         .set({ googleEventId, syncStatus: 'SYNCED', updatedAt: new Date() })
         .where(eq(timeBlocks.id, id));
       return this.serializeBlock({ ...row, googleEventId, syncStatus: 'SYNCED' });
-    } catch {
+    } catch (err) {
+      const safe = isGoogleCalendarError(err)
+        ? err.toLogFields()
+        : { message: err instanceof Error ? err.message : 'unknown' };
+      console.error('planner.syncBlock failed', {
+        timeBlockId: id,
+        hasGoogleEventId: Boolean(row.googleEventId),
+        ...safe,
+      });
       await this.db
         .update(timeBlocks)
         .set({ syncStatus: 'FAILED', updatedAt: new Date() })
@@ -751,7 +805,7 @@ export class PlannerV2Service {
       achievedAt: row.achievedAt,
       closedAt: row.closedAt,
       currentMilestoneId: row.currentMilestoneId,
-      milestones: parseGoalMilestones(row.milestonesJson),
+      milestones: parseGoalMilestones(row.milestonesJson, row.currentMilestoneId),
       systems: parseGoalSystems(row.systemsJson),
       processes: parseGoalProcesses(row.processesJson),
       metricObservations: parseGoalMetricObservations(row.metricObservationsJson),

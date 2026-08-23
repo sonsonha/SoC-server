@@ -15,6 +15,10 @@ import type {
 } from '../../infrastructure/providers/calendar/types.js';
 import type { JobQueue } from '../../infrastructure/jobs/jobQueue.js';
 import type { NotificationService } from '../../infrastructure/notifications/notificationService.js';
+import {
+  isGoogleCalendarError,
+  type GoogleCalendarError,
+} from '../../infrastructure/providers/calendar/googleErrors.js';
 
 const REPLAN_DEBOUNCE_MS = 5 * 60_000;
 const HORIZON_DAYS = 14;
@@ -36,6 +40,11 @@ export type CalendarPullSummary = {
   ownedRemoved: number;
   replannedDates: string[];
   connected: boolean;
+  /** Safe integration error code when pull partially/fully failed. */
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  googleStatus?: number | null;
+  reconnectRequired?: boolean;
 };
 
 export function isPlannerOwnedCalendarEvent(event: CalendarEvent): boolean {
@@ -84,25 +93,93 @@ export class CalendarPullService {
         ownedRemoved: 0,
         replannedDates: [],
         connected: false,
+        errorCode: null,
+        errorMessage: null,
+        googleStatus: null,
+        reconnectRequired: false,
       };
     }
 
-    const [primaryEvents, cosEvents, plannerOwnedRows] = await Promise.all([
+    let primaryEvents: CalendarEvent[] = [];
+    let cosEvents: CalendarEvent[] = [];
+    let pullError: GoogleCalendarError | null = null;
+    let cosListOk = !this.calendar.listCosEvents;
+
+    const primaryResult = await Promise.allSettled([
       this.calendar.listEvents(fromEpochMs, toEpochMs),
       this.calendar.listCosEvents
         ? this.calendar.listCosEvents(fromEpochMs, toEpochMs)
-        : Promise.resolve([]),
-      this.db
-        .select()
-        .from(timeBlocks)
-        .where(
-          and(
-            isNull(timeBlocks.deletedAt),
-            lt(timeBlocks.startEpochMs, toEpochMs),
-            gt(timeBlocks.endEpochMs, fromEpochMs),
-          ),
-        ),
+        : Promise.resolve([] as CalendarEvent[]),
     ]);
+
+    if (primaryResult[0].status === 'fulfilled') {
+      primaryEvents = primaryResult[0].value;
+    } else {
+      const err = primaryResult[0].reason;
+      if (isGoogleCalendarError(err)) {
+        pullError = err;
+        console.error('calendar.pull primary failed', err.toLogFields());
+      } else {
+        console.error('calendar.pull primary failed', {
+          message: err instanceof Error ? err.message : 'unknown',
+        });
+        throw err;
+      }
+    }
+
+    if (!this.calendar.listCosEvents) {
+      cosListOk = true;
+    } else if (primaryResult[1].status === 'fulfilled') {
+      cosEvents = primaryResult[1].value;
+      cosListOk = true;
+    } else {
+      const err = primaryResult[1].reason;
+      cosListOk = false;
+      if (isGoogleCalendarError(err)) {
+        pullError = pullError ?? err;
+        console.error('calendar.pull cos failed', err.toLogFields());
+      } else {
+        console.error('calendar.pull cos failed', {
+          message: err instanceof Error ? err.message : 'unknown',
+        });
+        if (!pullError) throw err;
+      }
+    }
+
+    // Auth / reconnect failures: do not mutate local commitments; surface reconnect.
+    if (
+      pullError &&
+      (pullError.code === 'GOOGLE_RECONNECT_REQUIRED' ||
+        pullError.code === 'GOOGLE_NOT_CONNECTED' ||
+        pullError.code === 'GOOGLE_FORBIDDEN') &&
+      primaryEvents.length === 0
+    ) {
+      return {
+        fetched: 0,
+        upserted: 0,
+        removed: 0,
+        ownedUpdated: 0,
+        ownedRemoved: 0,
+        replannedDates: [],
+        connected: false,
+        errorCode: pullError.code,
+        errorMessage: pullError.message,
+        googleStatus: pullError.googleStatus ?? null,
+        reconnectRequired: pullError.code === 'GOOGLE_RECONNECT_REQUIRED'
+          || pullError.code === 'GOOGLE_FORBIDDEN',
+      };
+    }
+
+    const plannerOwnedRows = await this.db
+      .select()
+      .from(timeBlocks)
+      .where(
+        and(
+          isNull(timeBlocks.deletedAt),
+          lt(timeBlocks.startEpochMs, toEpochMs),
+          gt(timeBlocks.endEpochMs, fromEpochMs),
+        ),
+      );
     const allEventsById = new Map(
       [...primaryEvents, ...cosEvents].map((event) => [event.eventId, event]),
     );
@@ -136,7 +213,8 @@ export class CalendarPullService {
     // Personal OS owns these rows, so edits/deletes made directly in Google
     // reconcile back to the local source of truth instead of being imported as
     // duplicate locked EXTERNAL commitments.
-    if (this.calendar.listCosEvents) {
+    // Skip when Cos list failed — an empty Cos result must not soft-delete local blocks.
+    if (this.calendar.listCosEvents && cosListOk) {
       for (const row of plannerOwnedRows) {
         const event =
           (row.googleEventId ? allEventsById.get(row.googleEventId) : undefined) ??
@@ -319,6 +397,11 @@ export class CalendarPullService {
       ownedRemoved,
       replannedDates,
       connected: true,
+      errorCode: pullError?.code ?? null,
+      errorMessage: pullError?.message ?? null,
+      googleStatus: pullError?.googleStatus ?? null,
+      reconnectRequired: pullError?.code === 'GOOGLE_RECONNECT_REQUIRED'
+        || pullError?.code === 'GOOGLE_FORBIDDEN',
     };
   }
 

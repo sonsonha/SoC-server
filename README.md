@@ -113,6 +113,15 @@ export DEVICE_AUTH_PEPPER=test-pepper-abcdefgh
 npm test
 ```
 
+Integration tests write into that same database. After `npm test`, restore dogfood data:
+
+```bash
+npm run dev:data:reset
+npm run seed:v2-goal-demo
+```
+
+See `docs/testing/v2-dev-data.md`. Reset refuses Railway/production URLs.
+
 ## API (Phase 00)
 
 | Method | Path | Auth |

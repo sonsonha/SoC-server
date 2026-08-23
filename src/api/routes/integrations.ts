@@ -12,6 +12,18 @@ import { calendarSyncState } from '../../infrastructure/db/schema/index.js';
 import type { Db } from '../../infrastructure/db/client.js';
 import type { CalendarProvider } from '../../infrastructure/providers/calendar/types.js';
 import type { PlannerV2Service } from '../../application/plannerV2Service.js';
+import {
+  isGoogleCalendarError,
+  type GoogleCalendarErrorCode,
+} from '../../infrastructure/providers/calendar/googleErrors.js';
+
+/** In-process last sync failure for status — not secrets, safe codes only. */
+let lastGoogleSyncError: {
+  code: GoogleCalendarErrorCode | string;
+  message: string;
+  googleStatus: number | null;
+  at: string;
+} | null = null;
 
 const connectBody = z.object({
   mode: z.enum(['fake', 'token']).default('fake'),
@@ -200,6 +212,7 @@ export async function integrationRoutes(
           : null,
         scopes: tokens.scope ?? null,
       });
+      lastGoogleSyncError = null;
       if (q.state && verifyWebOAuthState(q.state, deps.config.DEVICE_AUTH_PEPPER)) {
         return reply.redirect(`${deps.config.PLANNER_WEB_RETURN_URL.replace(/\/$/, '')}/?google=connected`);
       }
@@ -326,15 +339,38 @@ export async function integrationRoutes(
     const lastSyncAt = stateRows[0]?.lastSyncAt?.toISOString() ?? null;
     const lastReplanAt = stateRows[0]?.lastReplanAt?.toISOString() ?? null;
     const mode = deps.config.USE_FAKE_PROVIDERS || isFakeToken ? 'fake' : connected ? 'live' : 'none';
+    const missingRefresh = connected && !tokens?.refreshToken;
+    const expiredWithoutRefresh =
+      connected
+      && Boolean(tokens?.expiresAt)
+      && (tokens!.expiresAt!.getTime() < Date.now())
+      && !tokens?.refreshToken;
+    const reconnectRequired = Boolean(
+      missingRefresh
+      || expiredWithoutRefresh
+      || lastGoogleSyncError?.code === 'GOOGLE_RECONNECT_REQUIRED'
+      || lastGoogleSyncError?.code === 'GOOGLE_FORBIDDEN',
+    );
+    const healthy = connected && !reconnectRequired && lastGoogleSyncError == null;
     return reply.send({
       providers: [
         {
           provider: 'google_calendar',
           connected: connected || (deps.config.USE_FAKE_PROVIDERS && Boolean(tokens)),
+          healthy,
+          reconnectRequired,
           mode,
           lastSyncAt,
           lastReplanAt,
           calendarChanged: Boolean(lastReplanAt && lastSyncAt && lastReplanAt > lastSyncAt),
+          lastError: lastGoogleSyncError
+            ? {
+                code: lastGoogleSyncError.code,
+                message: lastGoogleSyncError.message,
+                googleStatus: lastGoogleSyncError.googleStatus,
+                at: lastGoogleSyncError.at,
+              }
+            : null,
         },
       ],
     });
@@ -361,11 +397,79 @@ export async function integrationRoutes(
   });
 
   const syncCalendar = async (_request: FastifyRequest, reply: FastifyReply) => {
-    const summary = await deps.calendarPull.pull();
-    const retry = summary.connected
-      ? await deps.plannerV2.retryCalendarSync()
-      : { attempted: 0, synced: 0, failed: 0 };
-    return reply.send({ ok: true, summary: { ...summary, retry } });
+    try {
+      const summary = await deps.calendarPull.pull();
+      if (summary.reconnectRequired || summary.errorCode === 'GOOGLE_RECONNECT_REQUIRED') {
+        lastGoogleSyncError = {
+          code: summary.errorCode ?? 'GOOGLE_RECONNECT_REQUIRED',
+          message: summary.errorMessage ?? 'Google Calendar reconnect required',
+          googleStatus: summary.googleStatus ?? null,
+          at: new Date().toISOString(),
+        };
+        return reply.code(401).send({
+          ok: false,
+          error: {
+            code: lastGoogleSyncError.code,
+            message: lastGoogleSyncError.message,
+            googleStatus: lastGoogleSyncError.googleStatus,
+          },
+          summary: {
+            ...summary,
+            retry: { attempted: 0, synced: 0, failed: 0 },
+          },
+        });
+      }
+
+      const retry = summary.connected
+        ? await deps.plannerV2.retryCalendarSync()
+        : { attempted: 0, synced: 0, failed: 0 };
+
+      if (summary.errorCode) {
+        lastGoogleSyncError = {
+          code: summary.errorCode,
+          message: summary.errorMessage ?? 'Google Calendar sync degraded',
+          googleStatus: summary.googleStatus ?? null,
+          at: new Date().toISOString(),
+        };
+      } else {
+        lastGoogleSyncError = null;
+      }
+
+      return reply.send({ ok: true, summary: { ...summary, retry } });
+    } catch (err) {
+      if (isGoogleCalendarError(err)) {
+        lastGoogleSyncError = {
+          code: err.code,
+          message: err.message,
+          googleStatus: err.googleStatus ?? null,
+          at: new Date().toISOString(),
+        };
+        console.error('calendar.sync failed', err.toLogFields());
+        return reply.code(err.statusCode).send({
+          ok: false,
+          error: err.toJSON(),
+          summary: {
+            fetched: 0,
+            upserted: 0,
+            removed: 0,
+            ownedUpdated: 0,
+            ownedRemoved: 0,
+            replannedDates: [],
+            connected: false,
+            reconnectRequired: err.code === 'GOOGLE_RECONNECT_REQUIRED'
+              || err.code === 'GOOGLE_FORBIDDEN',
+            errorCode: err.code,
+            errorMessage: err.message,
+            googleStatus: err.googleStatus ?? null,
+            retry: { attempted: 0, synced: 0, failed: 0 },
+          },
+        });
+      }
+      console.error('calendar.sync unexpected error', {
+        message: err instanceof Error ? err.message : 'unknown',
+      });
+      throw err;
+    }
   };
 
   app.post('/v1/calendar/sync', { preHandler: auth }, syncCalendar);
