@@ -31,6 +31,7 @@ import { IntegrationTokenService } from './modules/integrations/tokenService.js'
 import { CalendarPullService } from './modules/integrations/calendarPullService.js';
 import { OAuthConnectionStateService } from './modules/integrations/oauthConnectionState.js';
 import { createUserCalendarProviderAsync } from './modules/integrations/userCalendarProvider.js';
+import { GoalStructuringService } from './modules/ai/goalStructuringService.js';
 import { healthRoutes } from './api/routes/health.js';
 import { deviceRoutes } from './api/routes/device.js';
 import { syncRoutes } from './api/routes/sync.js';
@@ -38,6 +39,7 @@ import { intakeRoutes } from './api/routes/intake.js';
 import { preparationRoutes } from './api/routes/preparations.js';
 import { todayRoutes } from './api/routes/today.js';
 import { planRoutes } from './api/routes/plans.js';
+import { aiGoalRoutes } from './api/routes/aiGoal.js';
 import { completionRoutes } from './api/routes/completions.js';
 import { peopleRoutes } from './api/routes/people.js';
 import { waitingRoutes } from './api/routes/waiting.js';
@@ -372,6 +374,20 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     planner: plannerV2Service,
     webToken: deps.config.PLANNER_WEB_TOKEN,
     identity: identityService,
+  });
+
+  const goalStructuringService = new GoalStructuringService(
+    deps.db,
+    identityService,
+    plannerV2Service,
+    llmProvider,
+  );
+  await aiGoalRoutes(app, {
+    deviceService,
+    config: deps.config,
+    identity: identityService,
+    goalAi: goalStructuringService,
+    planner: plannerV2Service,
   });
 
   if (deps.config.WORKER_ENABLED) {

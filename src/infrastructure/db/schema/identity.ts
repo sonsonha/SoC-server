@@ -12,6 +12,8 @@ export const users = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     onboardingCompletedAt: timestamp('onboarding_completed_at', { withTimezone: true }),
+    /** Editable AI User Context for Goal structuring — never shared across users. */
+    aiContext: text('ai_context'),
   },
   (t) => [
     uniqueIndex('users_google_sub_uidx').on(t.googleSub),

@@ -34,6 +34,9 @@ export type IntakeInterpretation = {
   socialDatetimeHint?: string;
 };
 
+/** Opaque JSON for Goal structuring — validated by goalStructureSuggestionSchema. */
+export type GoalStructureRaw = unknown;
+
 export interface LlmProvider {
   interpretIntake(text: string, context: string): Promise<IntakeInterpretation>;
   structurePreparation(input: {
@@ -41,4 +44,6 @@ export interface LlmProvider {
     timeBudgetMinutes: number;
     candidate: { title: string; url: string; snippet: string };
   }): Promise<PreparationStructure>;
+  /** One-shot Goal structure suggestion. Returns raw JSON for server-side Zod parse. */
+  structureGoal?(prompt: string): Promise<GoalStructureRaw>;
 }

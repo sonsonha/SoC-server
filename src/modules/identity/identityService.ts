@@ -230,6 +230,19 @@ export class IdentityService {
       .where(eq(users.id, userId));
     return toPublic({ ...row, onboardingCompletedAt: now, updatedAt: now });
   }
+
+  async getAiContext(userId: string): Promise<string | null> {
+    const rows = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
+    return rows[0]?.aiContext ?? null;
+  }
+
+  async setAiContext(userId: string, aiContext: string): Promise<void> {
+    const now = new Date();
+    await this.db
+      .update(users)
+      .set({ aiContext, updatedAt: now })
+      .where(eq(users.id, userId));
+  }
 }
 
 export function buildSessionCookie(

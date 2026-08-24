@@ -38,6 +38,10 @@ export class DeepSeekLlmProvider implements LlmProvider {
     return structureSchema.parse(raw);
   }
 
+  async structureGoal(prompt: string): Promise<unknown> {
+    return this.generateJson(prompt);
+  }
+
   private async generateJson(prompt: string): Promise<unknown> {
     const url = `${this.baseUrl.replace(/\/$/, '')}/chat/completions`;
     const res = await fetch(url, {

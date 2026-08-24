@@ -32,6 +32,10 @@ export class GeminiLlmProvider implements LlmProvider {
     return structureSchema.parse(raw);
   }
 
+  async structureGoal(prompt: string): Promise<unknown> {
+    return this.generateJson(prompt);
+  }
+
   private async generateJson(prompt: string): Promise<unknown> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.apiKey}`;
     const res = await fetch(url, {

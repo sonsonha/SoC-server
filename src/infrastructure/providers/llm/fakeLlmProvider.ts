@@ -185,4 +185,145 @@ export class FakeLlmProvider implements LlmProvider {
       ],
     };
   }
+
+  async structureGoal(prompt: string): Promise<unknown> {
+    const lower = prompt.toLowerCase();
+    const isJob = /\b(job|backend|offer|interview|career)\b/.test(lower);
+    if (isJob) {
+      return {
+        outcome: {
+          statement: 'Receive at least one suitable Backend Developer offer.',
+          confidence: 'HIGH',
+        },
+        metrics: [
+          {
+            name: 'Suitable offers',
+            metricType: 'COUNT',
+            currentValue: 0,
+            targetValue: 1,
+            unit: 'offers',
+            rationale: 'Directly maps to the job outcome.',
+            confidence: 'HIGH',
+            needsUserDecision: false,
+          },
+        ],
+        milestones: [
+          { title: 'CV / profile ready' },
+          { title: 'Application pipeline established' },
+          { title: 'Interview pipeline established' },
+          { title: 'Technical interview readiness demonstrated' },
+          { title: 'Suitable offer received' },
+        ],
+        processes: [
+          {
+            name: 'Quality Applications',
+            metricType: 'COUNT',
+            targetValue: 5,
+            period: 'WEEK',
+            unit: 'apps',
+            rationale: 'Steady pipeline without spam volume.',
+            confidence: 'HIGH',
+          },
+          {
+            name: 'Technical Preparation',
+            metricType: 'DURATION',
+            targetValue: 180,
+            period: 'WEEK',
+            unit: 'min',
+            rationale: 'Repeatable depth beats one-off cramming.',
+            confidence: 'HIGH',
+          },
+          {
+            name: 'Mock Interview',
+            metricType: 'COUNT',
+            targetValue: 1,
+            period: 'WEEK',
+            unit: 'sessions',
+            confidence: 'MEDIUM',
+          },
+        ],
+        projects: [
+          {
+            title: 'Job Applications',
+            purpose: 'Maintain the active application pipeline.',
+            suggestedDefaultProcessName: 'Quality Applications',
+          },
+          {
+            title: 'Backend Interview Preparation',
+            purpose: 'Prepare technical fundamentals and interview skills.',
+            suggestedDefaultProcessName: 'Technical Preparation',
+          },
+          {
+            title: 'Portfolio / CV Polish',
+            purpose: 'Improve application material and technical presentation.',
+            suggestedDefaultProcessName: null,
+          },
+        ],
+        timeProtectedMinutesPerWeek: 180,
+        nextActions: [
+          { title: 'Research 3 target companies', estimatedMinutes: 45, projectTitle: 'Job Applications' },
+          { title: 'Review transactions and isolation', estimatedMinutes: 60, projectTitle: 'Backend Interview Preparation' },
+          { title: 'Schedule one mock interview', estimatedMinutes: 20, projectTitle: 'Backend Interview Preparation' },
+        ],
+        reviewCadence: 'WEEKLY',
+        assumptions: [
+          'Backend roles are currently a primary career target.',
+          'The user already has baseline software engineering experience.',
+        ],
+        questionsForUser: [],
+      };
+    }
+    return {
+      outcome: {
+        statement: 'Make meaningful progress on the stated Goal with a clear success check.',
+        confidence: 'MEDIUM',
+      },
+      metrics: [
+        {
+          name: 'Primary outcome check',
+          metricType: 'CUSTOM',
+          currentValue: null,
+          targetValue: null,
+          unit: null,
+          rationale: 'Metric needs clarification for this Goal.',
+          confidence: 'LOW',
+          needsUserDecision: true,
+          possibleAlternatives: [
+            'Binary completion of a concrete deliverable',
+            'A countable weekly process metric',
+            'A measurable outcome number',
+          ],
+        },
+      ],
+      milestones: [
+        { title: 'Clarify success criteria' },
+        { title: 'Establish weekly system' },
+        { title: 'Ship first meaningful checkpoint' },
+        { title: 'Goal outcome achieved' },
+      ],
+      processes: [
+        {
+          name: 'Focused work',
+          metricType: 'DURATION',
+          targetValue: 180,
+          period: 'WEEK',
+          unit: 'min',
+          confidence: 'MEDIUM',
+          rationale: 'Protect a small repeatable block of time.',
+        },
+      ],
+      projects: [
+        {
+          title: 'Foundation project',
+          purpose: 'Finite body of work that advances the Goal.',
+          suggestedDefaultProcessName: 'Focused work',
+        },
+      ],
+      timeProtectedMinutesPerWeek: 180,
+      nextActions: [{ title: 'Write a one-sentence outcome definition', estimatedMinutes: 15 }],
+      reviewCadence: 'WEEKLY',
+      assumptions: ['The Goal needs a clearer metric before strong tracking.'],
+      questionsForUser: ['What evidence would convince you this Goal is done?'],
+    };
+  }
 }
