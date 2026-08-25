@@ -72,11 +72,11 @@ describe('user AI context isolation invariant', () => {
 });
 
 describe('DeepSeek provider error mapping', () => {
-  it('maps malformed JSON to AI_STRUCTURE_INVALID without leaking secrets', async () => {
+  it('maps malformed JSON to AI_JSON_INVALID without leaking secrets', async () => {
     globalThis.fetch = vi.fn(async () =>
       new Response(
         JSON.stringify({
-          choices: [{ message: { content: 'not-json-at-all' } }],
+          choices: [{ message: { content: 'not-json-at-all' }, finish_reason: 'stop' }],
           usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
           model: 'deepseek-v4-pro',
         }),
@@ -86,7 +86,7 @@ describe('DeepSeek provider error mapping', () => {
 
     const provider = new DeepSeekLlmProvider('test-key', 'deepseek-v4-pro');
     await expect(provider.structureGoal('Title: X')).rejects.toMatchObject({
-      code: 'AI_STRUCTURE_INVALID',
+      code: 'AI_JSON_INVALID',
       statusCode: 502,
     });
   });
@@ -432,7 +432,7 @@ describe('GoalStructuringService.suggest isolation + no persist', () => {
     expect(capturedPrompt).not.toContain('Owner private goal');
   });
 
-  it('schema-invalid LLM payload yields AI_STRUCTURE_INVALID and does not call accept path', async () => {
+  it('schema-invalid LLM payload yields AI_SCHEMA_INVALID and does not call accept path', async () => {
     const { GoalStructuringService } = await import('./goalStructuringService.js');
     const svc = new GoalStructuringService(
       {
@@ -458,7 +458,7 @@ describe('GoalStructuringService.suggest isolation + no persist', () => {
     );
 
     await expect(svc.suggest('u1', { title: 'Get a Backend Developer Job' })).rejects.toMatchObject({
-      code: 'AI_STRUCTURE_INVALID',
+      code: 'AI_SCHEMA_INVALID',
     });
   });
 });

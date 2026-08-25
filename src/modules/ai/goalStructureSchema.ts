@@ -9,7 +9,7 @@ export const goalStructureSuggestionSchema = z.object({
       statement: z.string().trim().min(1).max(2_000),
       confidence: aiConfidenceSchema,
     })
-    .optional(),
+    .nullish(),
   metrics: z
     .array(
       z.object({
@@ -87,7 +87,6 @@ export const goalStructureSuggestionSchema = z.object({
 export type GoalStructureSuggestion = z.infer<typeof goalStructureSuggestionSchema>;
 
 export const GOAL_STRUCTURE_JSON_PROMPT = `You are a Personal OS Goal structuring assistant.
-Return ONE JSON object only. No markdown. No chat. No prose outside JSON.
 
 Personal OS semantics — never collapse these concepts:
 
@@ -100,18 +99,25 @@ Task = concrete executable next action
 
 Rules:
 - Prefer few meaningful items: 3–7 milestones, 1–4 processes, 1–4 projects.
-- Projects array is REQUIRED (at least one).
+- projects MUST be present as a JSON array with at least one Project.
+- Always include these array keys (use [] when no appropriate items): metrics, milestones, processes, nextActions, assumptions. projects must not be empty.
 - Distinguish Processes (repeatable) from Projects (finite).
 - Do not invent false precision. If a metric is unclear, set needsUserDecision=true and list possibleAlternatives with a recommended candidate in rationale.
-- Use confidence HIGH|MEDIUM|LOW honestly.
 - Do not invent personal facts absent from USER AI CONTEXT.
 - Avoid duplicate Projects already listed in CURRENT PLANNER CONTEXT.
 - Respect existing weekly workload — do not pile on many new systems.
 - Avoid generic motivational advice and overplanning.
 - Process metricType is COUNT or DURATION only; period is always WEEK.
-- For DURATION, use minutes (e.g. 3h → targetValue 180, unit "min"). Optional strings may be omitted or null.
+- For DURATION processes, targetValue is minutes (e.g. 3h → 180, unit "min").
 - suggestedDefaultProcessName must exactly match a process name in THIS suggestion when linking.
 - Surface uncertainty via assumptions and questionsForUser.
+
+Exact allowed enum values:
+- confidence: HIGH | MEDIUM | LOW
+- metrics.metricType: COUNT | DURATION | NUMBER | BOOLEAN | PERCENTAGE | CUSTOM
+- processes.metricType: COUNT | DURATION
+- processes.period: WEEK
+- reviewCadence: WEEKLY | MONTHLY | MILESTONE
 
 JSON shape:
 {
@@ -127,25 +133,32 @@ JSON shape:
     "needsUserDecision": boolean,
     "possibleAlternatives": string[]
   }],
-  "milestones": [{ "title": string, "description"?: string|null, "rationale"?: string|null }],
+  "milestones": [{ "title": string, "description": string|null, "rationale": string|null }],
   "processes": [{
     "name": string,
     "metricType": "COUNT"|"DURATION",
     "targetValue": number,
     "period": "WEEK",
-    "unit"?: string|null,
-    "rationale"?: string|null,
+    "unit": string|null,
+    "rationale": string|null,
     "confidence": "HIGH"|"MEDIUM"|"LOW"
   }],
   "projects": [{
     "title": string,
-    "purpose"?: string|null,
-    "suggestedDefaultProcessName"?: string|null,
-    "rationale"?: string|null
+    "purpose": string|null,
+    "suggestedDefaultProcessName": string|null,
+    "rationale": string|null
   }],
   "timeProtectedMinutesPerWeek": number|null,
-  "nextActions": [{ "title": string, "estimatedMinutes"?: number|null, "projectTitle"?: string|null }],
+  "nextActions": [{ "title": string, "estimatedMinutes": number|null, "projectTitle": string|null }],
   "reviewCadence": "WEEKLY"|"MONTHLY"|"MILESTONE",
   "assumptions": string[],
   "questionsForUser": string[]
-}`;
+}
+
+Return exactly one JSON object.
+Do not use Markdown.
+Do not wrap the JSON in \`\`\` fences.
+Use only enum values defined above.
+Always include all required array keys.
+Use [] when an array has no appropriate items (except projects, which must include at least one Project).`;

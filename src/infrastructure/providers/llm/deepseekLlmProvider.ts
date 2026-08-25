@@ -166,7 +166,10 @@ export class DeepSeekLlmProvider implements LlmProvider {
     }
 
     const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string | null; reasoning_content?: string | null } }>;
+      choices?: Array<{
+        message?: { content?: string | null; reasoning_content?: string | null };
+        finish_reason?: string | null;
+      }>;
       usage?: {
         prompt_tokens?: number;
         completion_tokens?: number;
@@ -182,12 +185,14 @@ export class DeepSeekLlmProvider implements LlmProvider {
       reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens,
       totalTokens: data.usage?.total_tokens,
     };
+    const finishReason = data.choices?.[0]?.finish_reason ?? null;
     console.info('deepseek.completion', {
       provider: 'deepseek',
       model: data.model ?? this.model,
       durationMs: Date.now() - started,
       attempt,
       success: true,
+      finishReason,
       thinking: opts.thinking,
       reasoningEffort: opts.thinking ? (opts.reasoningEffort ?? 'high') : null,
       ...usage,
@@ -195,10 +200,16 @@ export class DeepSeekLlmProvider implements LlmProvider {
 
     const text = data.choices?.[0]?.message?.content;
     if (!text?.trim()) {
+      console.error('deepseek.empty_content', {
+        provider: 'deepseek',
+        model: data.model ?? this.model,
+        finishReason,
+        code: 'AI_JSON_INVALID',
+      });
       throw new DeepSeekProviderError(
         'AI returned an invalid suggestion. You can continue manually.',
         502,
-        'AI_STRUCTURE_INVALID',
+        'AI_JSON_INVALID',
         false,
       );
     }
@@ -206,10 +217,17 @@ export class DeepSeekLlmProvider implements LlmProvider {
     try {
       return extractJsonObject(text);
     } catch {
+      console.error('deepseek.json_invalid', {
+        provider: 'deepseek',
+        model: data.model ?? this.model,
+        finishReason,
+        code: 'AI_JSON_INVALID',
+        contentLength: text.length,
+      });
       throw new DeepSeekProviderError(
         'AI returned an invalid suggestion. You can continue manually.',
         502,
-        'AI_STRUCTURE_INVALID',
+        'AI_JSON_INVALID',
         false,
       );
     }

@@ -18,6 +18,8 @@ import {
 } from './goalStructureSchema.js';
 import { INITIAL_OWNER_AI_CONTEXT_DEFAULT } from './ownerAiContextDefault.js';
 import { timeProtectedMinutesToSystemCadence } from './timeProtectedAdapter.js';
+import { normalizeGoalStructureSuggestion } from './normalizeGoalStructureSuggestion.js';
+import { formatZodIssuesSafe, safeTopLevelKeys } from './goalStructureValidation.js';
 
 const MAX_TITLE = 240;
 const MAX_WHY = 4_000;
@@ -227,12 +229,20 @@ export class GoalStructuringService {
       );
     }
 
-    const parsed = goalStructureSuggestionSchema.safeParse(raw);
+    const requestId = randomUUID();
+    const normalized = normalizeGoalStructureSuggestion(raw);
+    const parsed = goalStructureSuggestionSchema.safeParse(normalized);
     if (!parsed.success) {
+      console.error('AI_SCHEMA_INVALID', {
+        requestId,
+        provider: 'deepseek',
+        topLevelKeys: safeTopLevelKeys(raw),
+        issues: formatZodIssuesSafe(parsed.error),
+      });
       throw aiError(
         'AI returned an invalid suggestion. You can continue manually.',
         502,
-        'AI_STRUCTURE_INVALID',
+        'AI_SCHEMA_INVALID',
       );
     }
     return parsed.data;
