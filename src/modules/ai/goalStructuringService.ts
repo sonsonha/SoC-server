@@ -277,7 +277,7 @@ export class GoalStructuringService {
       name: p.name,
       measurementType: p.metricType,
       targetValue: p.targetValue,
-      unit: p.unit,
+      unit: p.unit ?? undefined,
       period: 'WEEK' as const,
       active: true,
     }));
