@@ -24,8 +24,8 @@ const MAX_WHY = 4_000;
 const MAX_AI_CONTEXT = 12_000;
 const MAX_PROMPT_CHARS = 24_000;
 const RATE_LIMIT_MS = 15_000;
-/** Thinking + JSON for deepseek-v4-pro can take longer than simple chat. */
-const AI_TIMEOUT_MS = 90_000;
+/** Thinking + JSON for deepseek-v4-pro often needs >90s in production. */
+const AI_TIMEOUT_MS = 150_000;
 
 const lastRequestAt = new Map<string, number>();
 
