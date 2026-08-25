@@ -1,11 +1,14 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../../infrastructure/db/client.js';
-import { goals, projects } from '../../infrastructure/db/schema/index.js';
+import { goals, projects, tasks } from '../../infrastructure/db/schema/index.js';
 import type { LlmProvider } from '../../infrastructure/providers/llm/types.js';
+import { DeepSeekProviderError } from '../../infrastructure/providers/llm/deepseekLlmProvider.js';
 import type { IdentityService } from '../identity/identityService.js';
 import {
+  parseGoalMilestones,
   parseGoalProcesses,
+  reconcileMilestones,
   type PlannerV2Service,
 } from '../../application/plannerV2Service.js';
 import {
@@ -14,17 +17,29 @@ import {
   type GoalStructureSuggestion,
 } from './goalStructureSchema.js';
 import { INITIAL_OWNER_AI_CONTEXT_DEFAULT } from './ownerAiContextDefault.js';
+import { timeProtectedMinutesToSystemCadence } from './timeProtectedAdapter.js';
 
 const MAX_TITLE = 240;
 const MAX_WHY = 4_000;
+const MAX_AI_CONTEXT = 12_000;
+const MAX_PROMPT_CHARS = 24_000;
 const RATE_LIMIT_MS = 15_000;
-const AI_TIMEOUT_MS = 45_000;
+/** Thinking + JSON for deepseek-v4-pro can take longer than simple chat. */
+const AI_TIMEOUT_MS = 90_000;
 
 const lastRequestAt = new Map<string, number>();
 
 export type PlannerAiSnapshot = {
-  activeGoals: Array<{ title: string; focusType: string | null }>;
-  activeProjects: Array<{ title: string; goalTitle: string | null }>;
+  activeGoals: Array<{
+    title: string;
+    focusType: string | null;
+    currentStage: string | null;
+  }>;
+  activeProjects: Array<{
+    title: string;
+    goalTitle: string | null;
+    defaultProcessName: string | null;
+  }>;
   processes: Array<{ name: string; targetValue: number; period: string; unit?: string }>;
 };
 
@@ -34,6 +49,14 @@ export type GoalStructureRequest = {
   why?: string;
   targetDate?: string | null;
 };
+
+function aiError(
+  message: string,
+  statusCode: number,
+  code: string,
+): Error & { statusCode: number; code: string } {
+  return Object.assign(new Error(message), { statusCode, code });
+}
 
 export class GoalStructuringService {
   constructor(
@@ -46,12 +69,13 @@ export class GoalStructuringService {
   async getAiContext(userId: string): Promise<{ aiContext: string; isDefaultSeed: boolean }> {
     const user = await this.identity.getUserById(userId);
     if (!user) {
-      throw Object.assign(new Error('User not found'), { statusCode: 404, code: 'NOT_FOUND' });
+      throw aiError('User not found', 404, 'NOT_FOUND');
     }
     const stored = await this.identity.getAiContext(userId);
     if (stored != null && stored.trim()) {
-      return { aiContext: stored, isDefaultSeed: false };
+      return { aiContext: stored.slice(0, MAX_AI_CONTEXT), isDefaultSeed: false };
     }
+    // Owner seed only — never inherit for other users.
     if (this.identity.isLegacyCalendarOwner(user.email)) {
       return { aiContext: INITIAL_OWNER_AI_CONTEXT_DEFAULT, isDefaultSeed: true };
     }
@@ -59,7 +83,7 @@ export class GoalStructuringService {
   }
 
   async setAiContext(userId: string, aiContext: string): Promise<{ aiContext: string }> {
-    const trimmed = aiContext.slice(0, 20_000);
+    const trimmed = aiContext.slice(0, MAX_AI_CONTEXT);
     await this.identity.setAiContext(userId, trimmed);
     return { aiContext: trimmed };
   }
@@ -67,7 +91,7 @@ export class GoalStructuringService {
   async resetAiContext(userId: string): Promise<{ aiContext: string }> {
     const user = await this.identity.getUserById(userId);
     if (!user) {
-      throw Object.assign(new Error('User not found'), { statusCode: 404, code: 'NOT_FOUND' });
+      throw aiError('User not found', 404, 'NOT_FOUND');
     }
     if (this.identity.isLegacyCalendarOwner(user.email)) {
       await this.identity.setAiContext(userId, INITIAL_OWNER_AI_CONTEXT_DEFAULT);
@@ -82,13 +106,24 @@ export class GoalStructuringService {
       .select()
       .from(goals)
       .where(and(eq(goals.userId, userId), isNull(goals.deletedAt)));
-    const activeGoals = goalRows
-      .filter((g) => g.status === 'ACTIVE')
-      .slice(0, 12)
-      .map((g) => ({
+    const activeGoalRows = goalRows.filter((g) => g.status === 'ACTIVE').slice(0, 12);
+
+    const processNameById = new Map<string, string>();
+    for (const g of activeGoalRows) {
+      for (const proc of parseGoalProcesses(g.processesJson)) {
+        if (proc.active) processNameById.set(proc.id, proc.name);
+      }
+    }
+
+    const activeGoals = activeGoalRows.map((g) => {
+      const milestones = parseGoalMilestones(g.milestonesJson, g.currentMilestoneId);
+      const current = milestones.find((m) => m.status === 'current') ?? null;
+      return {
         title: g.title,
         focusType: g.focusType,
-      }));
+        currentStage: current?.title ?? null,
+      };
+    });
 
     const projectRows = await this.db
       .select()
@@ -101,10 +136,13 @@ export class GoalStructuringService {
       .map((p) => ({
         title: p.title,
         goalTitle: p.goalId ? (goalTitleById.get(p.goalId) ?? null) : null,
+        defaultProcessName: p.defaultGoalProcessId
+          ? (processNameById.get(p.defaultGoalProcessId) ?? null)
+          : null,
       }));
 
     const processMap = new Map<string, PlannerAiSnapshot['processes'][number]>();
-    for (const g of goalRows.filter((row) => row.status === 'ACTIVE')) {
+    for (const g of activeGoalRows) {
       for (const proc of parseGoalProcesses(g.processesJson)) {
         if (!proc.active) continue;
         const key = `${proc.name}|${proc.period}|${proc.targetValue}`;
@@ -129,27 +167,26 @@ export class GoalStructuringService {
   async suggest(userId: string, input: GoalStructureRequest): Promise<GoalStructureSuggestion> {
     const title = input.title.trim().slice(0, MAX_TITLE);
     if (!title) {
-      throw Object.assign(new Error('Goal title is required'), {
-        statusCode: 400,
-        code: 'INVALID_INPUT',
-      });
+      throw aiError('Goal title is required', 400, 'INVALID_INPUT');
     }
 
     const now = Date.now();
     const last = lastRequestAt.get(userId) ?? 0;
     if (now - last < RATE_LIMIT_MS) {
-      throw Object.assign(new Error('Please wait a moment before requesting another suggestion'), {
-        statusCode: 429,
-        code: 'RATE_LIMITED',
-      });
+      throw aiError(
+        'Please wait a moment before requesting another suggestion',
+        429,
+        'RATE_LIMITED',
+      );
     }
     lastRequestAt.set(userId, now);
 
     if (!this.llm.structureGoal) {
-      throw Object.assign(new Error('AI suggestions are unavailable right now. You can continue manually.'), {
-        statusCode: 503,
-        code: 'AI_UNAVAILABLE',
-      });
+      throw aiError(
+        'AI suggestions are unavailable right now. You can continue manually.',
+        503,
+        'AI_UNAVAILABLE',
+      );
     }
 
     const { aiContext } = await this.getAiContext(userId);
@@ -159,9 +196,9 @@ export class GoalStructuringService {
       description: input.description?.slice(0, MAX_WHY),
       why: input.why?.slice(0, MAX_WHY),
       targetDate: input.targetDate ?? null,
-      aiContext,
+      aiContext: aiContext.slice(0, MAX_AI_CONTEXT),
       snapshot,
-    });
+    }).slice(0, MAX_PROMPT_CHARS);
 
     let raw: unknown;
     try {
@@ -169,34 +206,40 @@ export class GoalStructuringService {
         this.llm.structureGoal(prompt),
         new Promise<never>((_, reject) => {
           setTimeout(() => {
-            reject(Object.assign(new Error('AI suggestions timed out. You can continue manually.'), {
-              statusCode: 504,
-              code: 'AI_TIMEOUT',
-            }));
+            reject(aiError(
+              'AI suggestions timed out. You can continue manually.',
+              504,
+              'AI_TIMEOUT',
+            ));
           }, AI_TIMEOUT_MS);
         }),
       ]);
     } catch (err) {
+      if (err instanceof DeepSeekProviderError) {
+        throw aiError(err.message, err.statusCode, err.code);
+      }
       const e = err as { statusCode?: number; code?: string; message?: string };
       if (e.statusCode && e.code) throw err;
-      throw Object.assign(
-        new Error('AI suggestions are unavailable right now. You can continue manually.'),
-        { statusCode: 503, code: 'AI_UNAVAILABLE' },
+      throw aiError(
+        'AI suggestions are unavailable right now. You can continue manually.',
+        503,
+        'AI_UNAVAILABLE',
       );
     }
 
     const parsed = goalStructureSuggestionSchema.safeParse(raw);
     if (!parsed.success) {
-      throw Object.assign(new Error('AI returned an invalid suggestion. You can continue manually.'), {
-        statusCode: 502,
-        code: 'AI_INVALID_RESPONSE',
-      });
+      throw aiError(
+        'AI returned an invalid suggestion. You can continue manually.',
+        502,
+        'AI_STRUCTURE_INVALID',
+      );
     }
     return parsed.data;
   }
 
   /**
-   * Persist an edited suggestion as Goal + Processes + Projects (+ optional Tasks).
+   * Persist an edited suggestion atomically.
    * Generation never persists — only this path writes planner data.
    */
   async accept(
@@ -211,16 +254,23 @@ export class GoalStructuringService {
     },
   ) {
     const suggestion = goalStructureSuggestionSchema.parse(input.suggestion);
+    if (suggestion.projects.length === 0) {
+      throw aiError('At least one Project is required', 400, 'INVALID_INPUT');
+    }
+
     const outcome =
       suggestion.outcome?.statement?.trim()
       || input.title.trim();
     const metricText = formatPrimaryMetric(suggestion);
     const milestoneIds = suggestion.milestones.map(() => randomUUID());
-    const milestones = suggestion.milestones.map((m, index) => ({
-      id: milestoneIds[index]!,
-      title: m.title,
-      status: (index === 0 ? 'current' : 'pending') as 'pending' | 'current' | 'done',
-    }));
+    const milestones = reconcileMilestones(
+      suggestion.milestones.map((m, index) => ({
+        id: milestoneIds[index]!,
+        title: m.title,
+        status: (index === 0 ? 'current' : 'pending') as 'pending' | 'current' | 'done',
+      })),
+      milestoneIds[0] ?? null,
+    );
     const processIds = suggestion.processes.map(() => randomUUID());
     const processes = suggestion.processes.map((p, index) => ({
       id: processIds[index]!,
@@ -231,75 +281,138 @@ export class GoalStructuringService {
       period: 'WEEK' as const,
       active: true,
     }));
-    const processIdByName = new Map(processes.map((p) => [p.name.trim().toLowerCase(), p.id]));
+    /** Resolve suggested process names within THIS draft only — never fuzzy-match existing goals. */
+    const processIdByName = new Map(
+      processes.map((p) => [p.name.trim().toLowerCase(), p.id] as const),
+    );
+    const timeProtected = timeProtectedMinutesToSystemCadence(
+      suggestion.timeProtectedMinutesPerWeek,
+    );
     const systems = [
       ...processes.map((p) => ({
         id: randomUUID(),
         title: p.name,
         cadence: formatProcessCadence(p),
       })),
-      ...(suggestion.timeProtectedMinutesPerWeek
-        ? [{
-            id: randomUUID(),
-            title: 'Time protected',
-            cadence: `${Math.round(suggestion.timeProtectedMinutesPerWeek / 60)}h / week`,
-          }]
+      ...(timeProtected
+        ? [{ id: randomUUID(), title: timeProtected.title, cadence: timeProtected.cadence }]
         : []),
     ];
 
-    const goal = await this.planner.createGoal(userId, {
-      title: outcome.slice(0, MAX_TITLE),
-      outcome: outcome.slice(0, 10_000),
-      why: (input.why ?? '').slice(0, 10_000),
-      metric: metricText.slice(0, 10_000),
-      targetDate: input.targetDate ?? null,
-      focusType: input.focusType ?? 'FOCUS',
-      milestones,
-      systems,
-      processes,
-      currentMilestoneId: milestones[0]?.id ?? null,
+    const goalId = randomUUID();
+    const now = new Date();
+    const selected = new Set(input.selectedNextActionIndexes ?? []);
+
+    const result = await this.db.transaction(async (tx) => {
+      await tx.insert(goals).values({
+        id: goalId,
+        userId,
+        title: outcome.slice(0, MAX_TITLE),
+        lifeArea: 'LIFE',
+        description: '',
+        horizon: 'SHORT',
+        status: 'ACTIVE',
+        targetDate: input.targetDate ?? null,
+        parentId: null,
+        successCriteria: '',
+        outcome: outcome.slice(0, 10_000),
+        why: (input.why ?? '').slice(0, 10_000),
+        metric: metricText.slice(0, 10_000),
+        focusType: input.focusType ?? 'FOCUS',
+        outcomeStatus: 'ACTIVE',
+        achievedAt: null,
+        closedAt: null,
+        currentMilestoneId: milestones[0]?.id ?? null,
+        milestonesJson: JSON.stringify(milestones),
+        systemsJson: JSON.stringify(systems),
+        processesJson: JSON.stringify(processes),
+        metricObservationsJson: JSON.stringify([]),
+        reflectionJson: JSON.stringify({}),
+        reviewSnapshotJson: JSON.stringify({}),
+        revision: 1,
+        updatedAt: now,
+        deletedAt: null,
+      });
+
+      const createdProjects: Array<{
+        id: string;
+        title: string;
+        goalId: string;
+        defaultGoalProcessId: string | null;
+      }> = [];
+
+      for (const project of suggestion.projects) {
+        const defaultProcessId = project.suggestedDefaultProcessName?.trim()
+          ? processIdByName.get(project.suggestedDefaultProcessName.trim().toLowerCase()) ?? null
+          : null;
+        const projectId = randomUUID();
+        await tx.insert(projects).values({
+          id: projectId,
+          userId,
+          title: project.title.slice(0, MAX_TITLE),
+          goalId,
+          defaultGoalProcessId: defaultProcessId,
+          color: '#705CF6',
+          lifeArea: 'LIFE',
+          description: (project.purpose ?? '').slice(0, 10_000),
+          targetDate: null,
+          active: true,
+          revision: 1,
+          updatedAt: now,
+          deletedAt: null,
+        });
+        createdProjects.push({
+          id: projectId,
+          title: project.title,
+          goalId,
+          defaultGoalProcessId: defaultProcessId,
+        });
+      }
+
+      const projectIdByTitle = new Map(
+        createdProjects.map((p) => [p.title.trim().toLowerCase(), p.id] as const),
+      );
+      const createdTasks: Array<{ id: string; title: string }> = [];
+
+      for (let i = 0; i < suggestion.nextActions.length; i += 1) {
+        if (!selected.has(i)) continue;
+        const action = suggestion.nextActions[i]!;
+        const projectId = action.projectTitle?.trim()
+          ? projectIdByTitle.get(action.projectTitle.trim().toLowerCase()) ?? null
+          : null;
+        const linkedProcessId = projectId
+          ? (createdProjects.find((p) => p.id === projectId)?.defaultGoalProcessId ?? null)
+          : null;
+        const taskId = randomUUID();
+        await tx.insert(tasks).values({
+          id: taskId,
+          userId,
+          title: action.title.slice(0, MAX_TITLE),
+          description: '',
+          projectId,
+          goalId,
+          goalProcessId: linkedProcessId,
+          lifeArea: 'LIFE',
+          priority: 2,
+          preferredTime: 'WEEK',
+          estimatedMinutes: action.estimatedMinutes ?? 30,
+          status: 'TODO',
+          revision: 1,
+          updatedAt: now,
+          deletedAt: null,
+        });
+        createdTasks.push({ id: taskId, title: action.title });
+      }
+
+      return { createdProjects, createdTasks };
     });
 
-    const createdProjects = [];
-    for (const project of suggestion.projects) {
-      const defaultProcessId = project.suggestedDefaultProcessName
-        ? processIdByName.get(project.suggestedDefaultProcessName.trim().toLowerCase()) ?? null
-        : null;
-      const created = await this.planner.createProject(userId, {
-        title: project.title,
-        description: project.purpose ?? '',
-        goalId: goal.id,
-        defaultGoalProcessId: defaultProcessId,
-        active: true,
-      });
-      createdProjects.push(created);
-    }
-
-    const projectIdByTitle = new Map(
-      createdProjects.map((p) => [p.title.trim().toLowerCase(), p.id]),
-    );
-    const selected = new Set(input.selectedNextActionIndexes ?? []);
-    const createdTasks = [];
-    for (let i = 0; i < suggestion.nextActions.length; i += 1) {
-      if (!selected.has(i)) continue;
-      const action = suggestion.nextActions[i]!;
-      const projectId = action.projectTitle
-        ? projectIdByTitle.get(action.projectTitle.trim().toLowerCase()) ?? null
-        : null;
-      const task = await this.planner.createTask(userId, {
-        title: action.title,
-        durationMinutes: action.estimatedMinutes ?? 30,
-        projectId,
-        goalId: goal.id,
-        dueHorizon: 'WEEK',
-      });
-      createdTasks.push(task);
-    }
-
+    // Serialize via planner ownership path (same user) for API response shape.
+    const goal = await this.planner.getGoalProgress(userId, goalId).then((r) => r.goal);
     return {
       goal,
-      projects: createdProjects,
-      tasks: createdTasks,
+      projects: result.createdProjects,
+      tasks: result.createdTasks,
     };
   }
 
@@ -313,15 +426,29 @@ export class GoalStructuringService {
   }): string {
     const plannerLines = [
       'ACTIVE GOALS',
-      ...opts.snapshot.activeGoals.map((g) => `- ${g.title}${g.focusType ? ` — ${g.focusType}` : ''}`),
+      ...(opts.snapshot.activeGoals.length
+        ? opts.snapshot.activeGoals.map((g) => {
+            const stage = g.currentStage ? `; stage: ${g.currentStage}` : '';
+            return `- ${g.title}${g.focusType ? ` — ${g.focusType}` : ''}${stage}`;
+          })
+        : ['(none)']),
       '',
       'ACTIVE PROJECTS',
-      ...opts.snapshot.activeProjects.map((p) => `- ${p.title}${p.goalTitle ? ` (Goal: ${p.goalTitle})` : ''}`),
+      ...(opts.snapshot.activeProjects.length
+        ? opts.snapshot.activeProjects.map((p) => {
+            const goal = p.goalTitle ? ` (Goal: ${p.goalTitle})` : '';
+            const proc = p.defaultProcessName ? `; process: ${p.defaultProcessName}` : '';
+            return `- ${p.title}${goal}${proc}`;
+          })
+        : ['(none)']),
       '',
       'CURRENT WEEKLY SYSTEMS',
-      ...opts.snapshot.processes.map(
-        (p) => `- ${p.name} — ${p.targetValue}${p.unit ? ` ${p.unit}` : ''} / ${p.period.toLowerCase()}`,
-      ),
+      ...(opts.snapshot.processes.length
+        ? opts.snapshot.processes.map(
+            (p) =>
+              `- ${p.name} — ${p.targetValue}${p.unit ? ` ${p.unit}` : ''} / ${p.period.toLowerCase()}`,
+          )
+        : ['(none)']),
     ].join('\n');
 
     return [
@@ -331,7 +458,7 @@ export class GoalStructuringService {
       opts.aiContext.trim() || '(none provided)',
       '',
       'CURRENT PLANNER CONTEXT',
-      plannerLines || '(empty)',
+      plannerLines,
       '',
       'NEW GOAL INPUT',
       `Title: ${opts.title}`,

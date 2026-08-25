@@ -41,7 +41,7 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   GEMINI_API_KEY: z.string().optional(),
   DEEPSEEK_API_KEY: z.string().optional(),
-  DEEPSEEK_MODEL: z.string().default('deepseek-chat'),
+  DEEPSEEK_MODEL: z.string().default('deepseek-v4-pro'),
   /** Prefer an LLM even when USE_FAKE_PROVIDERS=true (maps/search stay fake). */
   LLM_PROVIDER: z.enum(['auto', 'fake', 'gemini', 'deepseek']).default('auto'),
   SEARCH_API_KEY: z.string().optional(),

@@ -15,10 +15,28 @@ Fastify + Drizzle + PostgreSQL modular monolith. Phase 00 delivers **device auth
 | Mode | Env |
 |------|-----|
 | Fake (default) | `USE_FAKE_PROVIDERS=true` and `LLM_PROVIDER=auto` |
-| DeepSeek (testing) | `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` — works even with `USE_FAKE_PROVIDERS=true` so maps/search stay fake |
+| **DeepSeek (production Goal Structuring)** | `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` + `DEEPSEEK_MODEL=deepseek-v4-pro` |
 | Gemini | `LLM_PROVIDER=gemini` + `GEMINI_API_KEY`, or `USE_FAKE_PROVIDERS=false` + key with `LLM_PROVIDER=auto` |
 
-Optional: `DEEPSEEK_MODEL` (default `deepseek-chat`). On startup logs `Provider selection { llm, fakeProviders }`.
+- Base URL: `https://api.deepseek.com` (Chat Completions)
+- Default model: **`deepseek-v4-pro`** (do not assume legacy `deepseek-chat` / `deepseek-reasoner`)
+- `DEEPSEEK_API_KEY` is **Railway/backend only** — never put it in Vercel `NEXT_PUBLIC_*`
+- Tip: `USE_FAKE_PROVIDERS=true` + `LLM_PROVIDER=deepseek` uses live DeepSeek while maps/search stay fake
+
+On startup logs `Provider selection { llm, fakeProviders }`.
+
+Manual smoke (not CI; does not persist planner data):
+
+```bash
+npm run build
+DEEPSEEK_API_KEY=... npm run ai:smoke-goal-structure
+```
+
+After migrate, verify `users.ai_context` (migration 0023):
+
+```bash
+npm run ai:verify-schema
+```
 
 ## Local development
 
@@ -87,6 +105,9 @@ curl -s http://localhost:3000/v1/ping \
 | `LOG_LEVEL` | no | Default `info` |
 | `REGISTER_TOKEN` | no | If set in production, required as `X-Register-Token` |
 | `WORKER_ENABLED` | no | Phase 00: leave `false` (no jobs) |
+| `LLM_PROVIDER` | no | `auto` \| `fake` \| `gemini` \| `deepseek` — production Goal Structuring: `deepseek` |
+| `DEEPSEEK_API_KEY` | prod AI | Backend/Railway secret only (never Vercel public) |
+| `DEEPSEEK_MODEL` | no | Default `deepseek-v4-pro` |
 
 ## Android connectivity
 
@@ -100,8 +121,15 @@ curl -s http://localhost:3000/v1/ping \
 1. Create a Railway project with a **PostgreSQL** plugin.
 2. Deploy this `backend/` service (Dockerfile).
 3. Set `DATABASE_URL` (from plugin), `DEVICE_AUTH_PEPPER`, `NODE_ENV=production`.
-4. Release command runs migrations (`railway.toml`).
-5. Health check: `GET /health`.
+4. For AI Goal Structuring set (backend only):
+   - `LLM_PROVIDER=deepseek`
+   - `DEEPSEEK_API_KEY=<secret>`
+   - `DEEPSEEK_MODEL=deepseek-v4-pro`
+5. Release command runs migrations (`railway.toml`) — includes `0023_ai_user_context`.
+6. Optionally: `npm run ai:verify-schema` in Railway console after deploy.
+7. Health check: `GET /health`.
+
+See also `docs/railway-maintenance.md`.
 
 ## Tests
 

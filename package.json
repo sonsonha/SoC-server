@@ -18,6 +18,8 @@
     "calendar:backfill-owner": "node dist/scripts/backfill-calendar-owner.js",
     "calendar:enforce-ownership-not-null": "node dist/scripts/enforce-calendar-ownership-not-null.js",
     "calendar:verify-schema": "node dist/scripts/verify-calendar-schema.js",
+    "ai:verify-schema": "node dist/scripts/verifyAiSchema.js",
+    "ai:smoke-goal-structure": "node dist/scripts/smokeGoalStructure.js",
     "onboarding:backfill-owner": "node dist/scripts/backfill-onboarding-owner.js",
     "dev:data:reset": "tsx scripts/dev-data-reset.ts",
     "test": "vitest run",

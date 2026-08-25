@@ -24,11 +24,11 @@ export const goalStructureSuggestionSchema = z.object({
         ]),
         currentValue: z.number().nullable().optional(),
         targetValue: z.number().nullable().optional(),
-        unit: z.string().max(64).nullable().optional(),
-        rationale: z.string().max(2_000).optional(),
+        unit: z.string().max(64).nullish(),
+        rationale: z.string().max(2_000).nullish(),
         confidence: aiConfidenceSchema,
         needsUserDecision: z.boolean().optional(),
-        possibleAlternatives: z.array(z.string().max(240)).max(8).optional(),
+        possibleAlternatives: z.array(z.string().max(240)).max(8).nullish(),
       }),
     )
     .max(6)
@@ -37,8 +37,8 @@ export const goalStructureSuggestionSchema = z.object({
     .array(
       z.object({
         title: z.string().trim().min(1).max(240),
-        description: z.string().max(2_000).optional(),
-        rationale: z.string().max(2_000).optional(),
+        description: z.string().max(2_000).nullish(),
+        rationale: z.string().max(2_000).nullish(),
       }),
     )
     .max(12)
@@ -50,8 +50,8 @@ export const goalStructureSuggestionSchema = z.object({
         metricType: z.enum(['COUNT', 'DURATION']),
         targetValue: z.number().nonnegative(),
         period: z.literal('WEEK'),
-        unit: z.string().max(32).optional(),
-        rationale: z.string().max(2_000).optional(),
+        unit: z.string().max(32).nullish(),
+        rationale: z.string().max(2_000).nullish(),
         confidence: aiConfidenceSchema,
       }),
     )
@@ -61,9 +61,9 @@ export const goalStructureSuggestionSchema = z.object({
     .array(
       z.object({
         title: z.string().trim().min(1).max(240),
-        purpose: z.string().max(2_000).optional(),
-        suggestedDefaultProcessName: z.string().max(240).nullable().optional(),
-        rationale: z.string().max(2_000).optional(),
+        purpose: z.string().max(2_000).nullish(),
+        suggestedDefaultProcessName: z.string().max(240).nullish(),
+        rationale: z.string().max(2_000).nullish(),
       }),
     )
     .min(1)
@@ -73,39 +73,45 @@ export const goalStructureSuggestionSchema = z.object({
     .array(
       z.object({
         title: z.string().trim().min(1).max(240),
-        estimatedMinutes: z.number().int().positive().nullable().optional(),
-        projectTitle: z.string().max(240).nullable().optional(),
+        estimatedMinutes: z.number().int().positive().nullish(),
+        projectTitle: z.string().max(240).nullish(),
       }),
     )
     .max(12)
     .default([]),
-  reviewCadence: z.enum(['WEEKLY', 'MONTHLY', 'MILESTONE']).optional(),
+  reviewCadence: z.enum(['WEEKLY', 'MONTHLY', 'MILESTONE']).nullish(),
   assumptions: z.array(z.string().max(1_000)).max(12).default([]),
-  questionsForUser: z.array(z.string().max(1_000)).max(12).optional(),
+  questionsForUser: z.array(z.string().max(1_000)).max(12).nullish(),
 });
 
 export type GoalStructureSuggestion = z.infer<typeof goalStructureSuggestionSchema>;
 
 export const GOAL_STRUCTURE_JSON_PROMPT = `You are a Personal OS Goal structuring assistant.
-Return JSON only matching the schema described below. No markdown. No chat.
+Return ONE JSON object only. No markdown. No chat. No prose outside JSON.
 
-Personal OS semantics (do not collapse):
-- Goal = outcome to make true
-- Milestone = meaningful state / checkpoint
-- Process = repeated weekly behavior (measurable)
-- Project = finite body of work linked to the Goal
-- Task = concrete executable next action
+Personal OS semantics — never collapse these concepts:
+
+Goal = outcome to make true (desired end state)
+Metric = how that outcome is measured (may need clarification)
+Milestone = meaningful checkpoint / state transition toward the outcome
+Process / System = repeated measurable weekly behavior
+Project = finite body of work that advances the Goal
+Task = concrete executable next action
 
 Rules:
-- Prefer few meaningful processes (1–4) and few projects (1–4).
-- Prefer 3–7 milestones.
-- Do not invent false precision. If metric is unclear, set needsUserDecision=true and list possibleAlternatives.
-- Use confidence HIGH|MEDIUM|LOW honestly.
-- Avoid duplicate projects already listed in CURRENT PLANNER CONTEXT.
-- Avoid overplanning and generic motivational advice.
+- Prefer few meaningful items: 3–7 milestones, 1–4 processes, 1–4 projects.
 - Projects array is REQUIRED (at least one).
+- Distinguish Processes (repeatable) from Projects (finite).
+- Do not invent false precision. If a metric is unclear, set needsUserDecision=true and list possibleAlternatives with a recommended candidate in rationale.
+- Use confidence HIGH|MEDIUM|LOW honestly.
+- Do not invent personal facts absent from USER AI CONTEXT.
+- Avoid duplicate Projects already listed in CURRENT PLANNER CONTEXT.
+- Respect existing weekly workload — do not pile on many new systems.
+- Avoid generic motivational advice and overplanning.
 - Process metricType is COUNT or DURATION only; period is always WEEK.
-- Map DURATION units to minutes when possible (e.g. 3h → targetValue 180, unit "min").
+- For DURATION, use minutes (e.g. 3h → targetValue 180, unit "min"). Optional strings may be omitted or null.
+- suggestedDefaultProcessName must exactly match a process name in THIS suggestion when linking.
+- Surface uncertainty via assumptions and questionsForUser.
 
 JSON shape:
 {
@@ -116,26 +122,26 @@ JSON shape:
     "currentValue": number|null,
     "targetValue": number|null,
     "unit": string|null,
-    "rationale": string,
+    "rationale": string|null,
     "confidence": "HIGH"|"MEDIUM"|"LOW",
     "needsUserDecision": boolean,
     "possibleAlternatives": string[]
   }],
-  "milestones": [{ "title": string, "description"?: string, "rationale"?: string }],
+  "milestones": [{ "title": string, "description"?: string|null, "rationale"?: string|null }],
   "processes": [{
     "name": string,
     "metricType": "COUNT"|"DURATION",
     "targetValue": number,
     "period": "WEEK",
-    "unit"?: string,
-    "rationale"?: string,
+    "unit"?: string|null,
+    "rationale"?: string|null,
     "confidence": "HIGH"|"MEDIUM"|"LOW"
   }],
   "projects": [{
     "title": string,
-    "purpose"?: string,
+    "purpose"?: string|null,
     "suggestedDefaultProcessName"?: string|null,
-    "rationale"?: string
+    "rationale"?: string|null
   }],
   "timeProtectedMinutesPerWeek": number|null,
   "nextActions": [{ "title": string, "estimatedMinutes"?: number|null, "projectTitle"?: string|null }],

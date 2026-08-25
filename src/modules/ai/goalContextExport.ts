@@ -64,9 +64,14 @@ export function exportSuggestionMarkdown(opts: {
     lines.push('');
   }
 
-  if (s.timeProtectedMinutesPerWeek != null) {
-    lines.push('## Time Protected', '', `${s.timeProtectedMinutesPerWeek} minutes / week`, '');
-  }
+  lines.push(
+    '## Time Protected',
+    '',
+    s.timeProtectedMinutesPerWeek != null
+      ? `${s.timeProtectedMinutesPerWeek} minutes / week`
+      : '(not specified)',
+    '',
+  );
 
   lines.push('## Suggested Next Actions', '');
   for (const a of s.nextActions) {
