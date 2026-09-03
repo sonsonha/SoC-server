@@ -18,6 +18,15 @@ import {
   type GoalReflection,
   type GoalReviewSnapshot,
 } from './goalProgress.js';
+import {
+  appendCarryOverNote,
+  buildCarryOverNote,
+  deriveTaskProgressFromSessions,
+  directTaskCompletePolicy,
+  futureWeekOffsets,
+  resolveRepeatWeekCount,
+  shiftEpochByWeeks,
+} from './sessionEvidence.js';
 
 export type PlannerTaskStatus = 'INBOX' | 'SCHEDULED' | 'DONE';
 export type PlannerPriority = 'P1' | 'P2' | 'P3' | 'P4';
@@ -168,9 +177,18 @@ type CreateTaskInput = {
   dueHorizon?: 'DAY' | 'WEEK' | 'MONTH' | null;
   durationMinutes?: number;
   priority?: PlannerPriorityInput;
+  repeatSeriesId?: string | null;
+  carryOverFromTaskId?: string | null;
+  carryOverNote?: string | null;
 };
 
-type PatchTaskInput = Partial<CreateTaskInput> & { status?: PlannerTaskStatus };
+export type SeriesEditScope = 'THIS_INSTANCE' | 'THIS_AND_FUTURE';
+
+type PatchTaskInput = Partial<CreateTaskInput> & {
+  status?: PlannerTaskStatus;
+  /** When set on a repeated Task, controls how structural edits propagate. */
+  seriesScope?: SeriesEditScope;
+};
 
 type CreateTimeBlockInput = {
   taskId?: string | null;
@@ -180,7 +198,16 @@ type CreateTimeBlockInput = {
   endAt: string;
   color?: string;
   reminderMinutes?: number | null;
+  notes?: string;
+  status?: 'PLANNED' | 'DONE';
+  repeatSeriesId?: string | null;
 };
+
+type PatchTimeBlockInput = Partial<CreateTimeBlockInput> & {
+  seriesScope?: SeriesEditScope;
+};
+
+export type ProjectType = 'STANDARD' | 'HABIT';
 
 type CreateProjectInput = {
   title: string;
@@ -191,6 +218,7 @@ type CreateProjectInput = {
   description?: string;
   active?: boolean;
   targetDate?: string | null;
+  projectType?: ProjectType;
 };
 
 type PatchProjectInput = Partial<CreateProjectInput>;
@@ -213,6 +241,7 @@ type CreateGoalInput = {
   closedAt?: string | null;
   currentMilestoneId?: string | null;
   milestones?: GoalMilestone[];
+  /** Accepted for backward compatibility but never written for new Goals. */
   systems?: GoalSystem[];
   processes?: GoalProcess[];
   metricObservations?: GoalMetricObservation[];
@@ -221,6 +250,28 @@ type CreateGoalInput = {
 };
 
 type PatchGoalInput = Partial<CreateGoalInput>;
+
+type RepeatRangeInput = {
+  weeks?: number | null;
+  until?: string | null;
+};
+
+function projectTypeFromDb(value: string | null | undefined): ProjectType {
+  return value === 'HABIT' ? 'HABIT' : 'STANDARD';
+}
+
+/** Approximate Monday 00:00 UTC+7 for WEEK dueAt anchors (matches product week). */
+function startOfUtcWeekApprox(epochMs: number) {
+  const offset = 7 * 60 * 60 * 1000;
+  const shifted = new Date(epochMs + offset);
+  const day = shifted.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  return Date.UTC(
+    shifted.getUTCFullYear(),
+    shifted.getUTCMonth(),
+    shifted.getUTCDate() + diff,
+  ) - offset;
+}
 
 export class PlannerV2Service {
   constructor(
@@ -343,40 +394,80 @@ export class PlannerV2Service {
     } else if (nextProcessId && !nextGoalId) {
       this.badRequest('goalProcessId requires a goalId owned by the current user');
     }
+
+    if (input.status === 'DONE') {
+      const sessions = await this.listActiveSessionsForTask(userId, id);
+      const policy = directTaskCompletePolicy(sessions);
+      if (!policy.allow) {
+        if (policy.reason === 'ZERO_SESSIONS') {
+          this.badRequest('Schedule at least one session to track completion.');
+        }
+        this.badRequest('Complete sessions on the Calendar — multi-session Tasks cannot be marked done directly.');
+      }
+      const only = sessions[0]!;
+      await this.setSessionCompletion(userId, only.id, true);
+      return this.serializeTask((await this.requireOwnedTask(userId, id)));
+    }
+
     const status = input.status === undefined
       ? row.status
-      : input.status === 'DONE'
-        ? 'DONE'
-        : input.status === 'SCHEDULED'
-          ? 'SCHEDULED'
-          : 'TODO';
+      : input.status === 'SCHEDULED'
+        ? 'SCHEDULED'
+        : 'TODO';
     const completedAtEpochMs = input.status === undefined
       ? row.completedAtEpochMs
-      : input.status === 'DONE'
-        ? row.completedAtEpochMs ?? Date.now()
+      : null;
+
+    const nextNotes = input.notes === undefined ? row.description : input.notes;
+    const nextTitle = input.title ?? row.title;
+    const nextDueAt = input.dueAt === undefined
+      ? row.deadlineEpochMs
+      : input.dueAt
+        ? new Date(input.dueAt).getTime()
         : null;
-    await this.db
-      .update(tasks)
-      .set({
-        title: input.title ?? row.title,
-        description: input.notes ?? row.description,
-        projectId: input.projectId === undefined ? row.projectId : input.projectId,
-        goalId: nextGoalId,
-        goalProcessId: nextProcessId,
-        deadlineEpochMs: input.dueAt === undefined
-          ? row.deadlineEpochMs
-          : input.dueAt
-            ? new Date(input.dueAt).getTime()
-            : null,
-        preferredTime: input.dueHorizon === undefined ? row.preferredTime : input.dueHorizon,
-        estimatedMinutes: input.durationMinutes ?? row.estimatedMinutes,
-        priority: input.priority ? priorityToDb(input.priority) : row.priority,
-        status,
-        completedAtEpochMs,
-        revision: row.revision + 1,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(tasks.id, id), eq(tasks.userId, userId)));
+    const nextHorizon = input.dueHorizon === undefined ? row.preferredTime : input.dueHorizon;
+    const nextDuration = input.durationMinutes ?? row.estimatedMinutes;
+    const nextPriority = input.priority ? priorityToDb(input.priority) : row.priority;
+    const nextProjectId = input.projectId === undefined ? row.projectId : input.projectId;
+
+    const applyToFuture = input.seriesScope === 'THIS_AND_FUTURE' && Boolean(row.repeatSeriesId);
+    const targets = applyToFuture
+      ? await this.listSeriesTasksFrom(userId, row.repeatSeriesId!, row.deadlineEpochMs ?? 0, id)
+      : [row];
+
+    for (const target of targets) {
+      const isSource = target.id === id;
+      await this.db
+        .update(tasks)
+        .set({
+          title: nextTitle,
+          description: isSource ? nextNotes : target.description,
+          projectId: nextProjectId,
+          goalId: isSource ? nextGoalId : target.goalId,
+          goalProcessId: isSource ? nextProcessId : target.goalProcessId,
+          deadlineEpochMs: isSource
+            ? nextDueAt
+            : target.deadlineEpochMs,
+          preferredTime: nextHorizon,
+          estimatedMinutes: nextDuration,
+          priority: nextPriority,
+          status: isSource ? status : target.status,
+          completedAtEpochMs: isSource ? completedAtEpochMs : target.completedAtEpochMs,
+          repeatSeriesId: input.repeatSeriesId === undefined
+            ? target.repeatSeriesId
+            : input.repeatSeriesId,
+          carryOverFromTaskId: input.carryOverFromTaskId === undefined
+            ? target.carryOverFromTaskId
+            : input.carryOverFromTaskId,
+          carryOverNote: input.carryOverNote === undefined
+            ? target.carryOverNote
+            : input.carryOverNote,
+          revision: target.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, target.id), eq(tasks.userId, userId)));
+    }
+
     const updated = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
     return this.serializeTask(updated[0]!);
   }
@@ -433,6 +524,7 @@ export class PlannerV2Service {
     if (input.taskId) await this.requireOwnedTask(userId, input.taskId);
     if (input.projectId) await this.requireOwnedProject(userId, input.projectId);
     const id = randomUUID();
+    const status = input.status === 'DONE' ? 'DONE' : 'PLANNED';
     await this.db.insert(timeBlocks).values({
       id,
       userId,
@@ -442,45 +534,95 @@ export class PlannerV2Service {
       startEpochMs: start,
       endEpochMs: end,
       color: input.color ?? '#705CF6',
+      status,
+      notes: input.notes ?? '',
+      completedAtEpochMs: status === 'DONE' ? Date.now() : null,
       reminderMinutes: input.reminderMinutes ?? null,
+      repeatSeriesId: input.repeatSeriesId ?? null,
       syncStatus: 'PENDING',
       revision: 1,
       updatedAt: new Date(),
       deletedAt: null,
     });
     if (input.taskId) {
-      await this.db
-        .update(tasks)
-        .set({ status: 'SCHEDULED', updatedAt: new Date() })
-        .where(and(eq(tasks.id, input.taskId), eq(tasks.userId, userId)));
+      await this.syncTaskStatusFromSessions(userId, input.taskId);
     }
     return this.syncBlock(userId, id);
   }
 
-  async patchTimeBlock(userId: string, id: string, input: Partial<CreateTimeBlockInput>) {
+  async patchTimeBlock(userId: string, id: string, input: PatchTimeBlockInput) {
     const row = await this.requireOwnedTimeBlock(userId, id);
     if (input.taskId) await this.requireOwnedTask(userId, input.taskId);
     if (input.projectId) await this.requireOwnedProject(userId, input.projectId);
     const start = input.startAt ? new Date(input.startAt).getTime() : row.startEpochMs;
     const end = input.endAt ? new Date(input.endAt).getTime() : row.endEpochMs;
     this.validateWindow(start, end);
-    await this.db
-      .update(timeBlocks)
-      .set({
-        taskId: input.taskId === undefined ? row.taskId : input.taskId,
-        projectId: input.projectId === undefined ? row.projectId : input.projectId,
-        title: input.title ?? row.title,
-        startEpochMs: start,
-        endEpochMs: end,
-        color: input.color ?? row.color,
-        reminderMinutes: input.reminderMinutes === undefined
-          ? row.reminderMinutes
-          : input.reminderMinutes,
-        syncStatus: 'PENDING',
-        revision: row.revision + 1,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)));
+
+    if (input.status !== undefined) {
+      await this.setSessionCompletion(userId, id, input.status === 'DONE');
+      // Re-read after completion toggle; continue with other field patches if any.
+      const afterStatus = await this.requireOwnedTimeBlock(userId, id);
+      const hasStructural =
+        input.startAt !== undefined
+        || input.endAt !== undefined
+        || input.title !== undefined
+        || input.notes !== undefined
+        || input.color !== undefined
+        || input.reminderMinutes !== undefined
+        || input.taskId !== undefined
+        || input.projectId !== undefined;
+      if (!hasStructural) {
+        return this.serializeBlock(afterStatus);
+      }
+    }
+
+    const nextTitle = input.title ?? row.title;
+    const nextNotes = input.notes === undefined ? row.notes : input.notes;
+    const nextColor = input.color ?? row.color;
+    const nextReminder = input.reminderMinutes === undefined
+      ? row.reminderMinutes
+      : input.reminderMinutes;
+    const nextTaskId = input.taskId === undefined ? row.taskId : input.taskId;
+    const nextProjectId = input.projectId === undefined ? row.projectId : input.projectId;
+    const deltaStart = start - row.startEpochMs;
+    const deltaEnd = end - row.endEpochMs;
+
+    const applyToFuture = input.seriesScope === 'THIS_AND_FUTURE' && Boolean(row.repeatSeriesId);
+    const targets = applyToFuture
+      ? await this.listSeriesBlocksFrom(userId, row.repeatSeriesId!, row.startEpochMs, id)
+      : [row];
+
+    for (const target of targets) {
+      const isSource = target.id === id;
+      await this.db
+        .update(timeBlocks)
+        .set({
+          taskId: isSource ? nextTaskId : target.taskId,
+          projectId: isSource ? nextProjectId : target.projectId,
+          title: nextTitle,
+          notes: nextNotes,
+          startEpochMs: isSource ? start : target.startEpochMs + deltaStart,
+          endEpochMs: isSource ? end : target.endEpochMs + deltaEnd,
+          color: nextColor,
+          reminderMinutes: nextReminder,
+          syncStatus: 'PENDING',
+          revision: target.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(timeBlocks.id, target.id), eq(timeBlocks.userId, userId)));
+      await this.syncBlock(userId, target.id);
+    }
+
+    const affectedTaskIds = new Set<string>();
+    for (const target of targets) {
+      const taskId = target.id === id ? nextTaskId : target.taskId;
+      if (taskId) affectedTaskIds.add(taskId);
+      if (row.taskId) affectedTaskIds.add(row.taskId);
+    }
+    for (const taskId of affectedTaskIds) {
+      await this.syncTaskStatusFromSessions(userId, taskId);
+    }
+
     return this.syncBlock(userId, id);
   }
 
@@ -499,7 +641,329 @@ export class PlannerV2Service {
         updatedAt: new Date(),
       })
       .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)));
+    if (row.taskId) {
+      await this.syncTaskStatusFromSessions(userId, row.taskId);
+    }
     return { id, deleted: true as const };
+  }
+
+  /** Mark a Calendar Session done/incomplete. Never completes other series instances. */
+  async setSessionCompletion(userId: string, id: string, done: boolean) {
+    const row = await this.requireOwnedTimeBlock(userId, id);
+    await this.db
+      .update(timeBlocks)
+      .set({
+        status: done ? 'DONE' : 'PLANNED',
+        completedAtEpochMs: done ? (row.completedAtEpochMs ?? Date.now()) : null,
+        revision: row.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)));
+    if (row.taskId) {
+      await this.syncTaskStatusFromSessions(userId, row.taskId);
+    }
+    return this.serializeBlock(await this.requireOwnedTimeBlock(userId, id));
+  }
+
+  /**
+   * Repeat Task: materialize future Task instances + ALL current Sessions.
+   * Source Task joins (or keeps) a shared repeatSeriesId.
+   */
+  async repeatTask(userId: string, taskId: string, range: RepeatRangeInput) {
+    const source = await this.requireOwnedTask(userId, taskId);
+    const sessions = await this.listActiveSessionsForTask(userId, taskId);
+    const fromEpoch = source.deadlineEpochMs
+      ?? sessions[0]?.startEpochMs
+      ?? Date.now();
+    const weekCount = resolveRepeatWeekCount({
+      weeks: range.weeks,
+      untilEpochMs: range.until ? new Date(range.until).getTime() : null,
+      fromEpochMs: fromEpoch,
+    });
+    const seriesId = source.repeatSeriesId ?? randomUUID();
+    if (!source.repeatSeriesId) {
+      await this.db
+        .update(tasks)
+        .set({ repeatSeriesId: seriesId, revision: source.revision + 1, updatedAt: new Date() })
+        .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)));
+    }
+
+    // Ensure each source session has a stable series id for correspondence.
+    const sessionSeriesById = new Map<string, string>();
+    for (const session of sessions) {
+      const sid = session.repeatSeriesId ?? randomUUID();
+      sessionSeriesById.set(session.id, sid);
+      if (!session.repeatSeriesId) {
+        await this.db
+          .update(timeBlocks)
+          .set({ repeatSeriesId: sid, revision: session.revision + 1, updatedAt: new Date() })
+          .where(and(eq(timeBlocks.id, session.id), eq(timeBlocks.userId, userId)));
+      }
+    }
+
+    const createdTaskIds: string[] = [];
+    for (const weekOffset of futureWeekOffsets(weekCount)) {
+      const newTaskId = randomUUID();
+      const dueAt = source.deadlineEpochMs != null
+        ? shiftEpochByWeeks(source.deadlineEpochMs, weekOffset)
+        : null;
+      await this.db.insert(tasks).values({
+        id: newTaskId,
+        userId,
+        title: source.title,
+        description: '',
+        projectId: source.projectId,
+        goalId: source.goalId,
+        goalProcessId: source.goalProcessId,
+        lifeArea: source.lifeArea,
+        priority: source.priority,
+        deadlineEpochMs: dueAt,
+        preferredTime: source.preferredTime,
+        estimatedMinutes: source.estimatedMinutes,
+        status: 'TODO',
+        completedAtEpochMs: null,
+        repeatSeriesId: seriesId,
+        revision: 1,
+        updatedAt: new Date(),
+        deletedAt: null,
+      });
+      createdTaskIds.push(newTaskId);
+
+      for (const session of sessions) {
+        const blockId = randomUUID();
+        const start = shiftEpochByWeeks(session.startEpochMs, weekOffset);
+        const end = shiftEpochByWeeks(session.endEpochMs, weekOffset);
+        await this.db.insert(timeBlocks).values({
+          id: blockId,
+          userId,
+          taskId: newTaskId,
+          projectId: session.projectId ?? source.projectId,
+          title: session.title,
+          startEpochMs: start,
+          endEpochMs: end,
+          color: session.color,
+          status: 'PLANNED',
+          notes: session.notes ?? '',
+          completedAtEpochMs: null,
+          reminderMinutes: session.reminderMinutes,
+          repeatSeriesId: sessionSeriesById.get(session.id) ?? null,
+          syncStatus: 'PENDING',
+          revision: 1,
+          updatedAt: new Date(),
+          deletedAt: null,
+        });
+        await this.syncBlock(userId, blockId);
+      }
+      if (sessions.length > 0) {
+        await this.syncTaskStatusFromSessions(userId, newTaskId);
+      }
+    }
+
+    return {
+      seriesId,
+      sourceTaskId: taskId,
+      createdTaskIds,
+      weeks: weekCount,
+    };
+  }
+
+  /**
+   * Repeat Session: only the selected Session into future weeks.
+   * Creates Task instances when the week has no corresponding Task in the series.
+   */
+  async repeatSession(userId: string, blockId: string, range: RepeatRangeInput) {
+    const session = await this.requireOwnedTimeBlock(userId, blockId);
+    if (!session.taskId) this.badRequest('Session must belong to a Task to repeat.');
+    const sourceTask = await this.requireOwnedTask(userId, session.taskId);
+    const fromEpoch = session.startEpochMs;
+    const weekCount = resolveRepeatWeekCount({
+      weeks: range.weeks,
+      untilEpochMs: range.until ? new Date(range.until).getTime() : null,
+      fromEpochMs: fromEpoch,
+    });
+
+    const taskSeriesId = sourceTask.repeatSeriesId ?? randomUUID();
+    if (!sourceTask.repeatSeriesId) {
+      await this.db
+        .update(tasks)
+        .set({ repeatSeriesId: taskSeriesId, revision: sourceTask.revision + 1, updatedAt: new Date() })
+        .where(and(eq(tasks.id, sourceTask.id), eq(tasks.userId, userId)));
+    }
+
+    const sessionSeriesId = session.repeatSeriesId ?? randomUUID();
+    if (!session.repeatSeriesId) {
+      await this.db
+        .update(timeBlocks)
+        .set({ repeatSeriesId: sessionSeriesId, revision: session.revision + 1, updatedAt: new Date() })
+        .where(and(eq(timeBlocks.id, blockId), eq(timeBlocks.userId, userId)));
+    }
+
+    const createdTaskIds: string[] = [];
+    const createdBlockIds: string[] = [];
+
+    for (const weekOffset of futureWeekOffsets(weekCount)) {
+      const targetStart = shiftEpochByWeeks(session.startEpochMs, weekOffset);
+      // Conflict: corresponding session already exists in series for this week.
+      const existingBlocks = await this.db
+        .select()
+        .from(timeBlocks)
+        .where(
+          and(
+            eq(timeBlocks.userId, userId),
+            eq(timeBlocks.repeatSeriesId, sessionSeriesId),
+            isNull(timeBlocks.deletedAt),
+          ),
+        );
+      const conflict = existingBlocks.find((b) => {
+        const delta = Math.abs(b.startEpochMs - targetStart);
+        return delta < 60_000;
+      });
+      if (conflict) {
+        this.badRequest('A corresponding repeated Session already exists in that week.');
+      }
+
+      let targetTaskId = await this.findSeriesTaskForWeek(
+        userId,
+        taskSeriesId,
+        sourceTask.deadlineEpochMs != null
+          ? shiftEpochByWeeks(sourceTask.deadlineEpochMs, weekOffset)
+          : targetStart,
+      );
+
+      if (!targetTaskId) {
+        targetTaskId = randomUUID();
+        const dueAt = sourceTask.deadlineEpochMs != null
+          ? shiftEpochByWeeks(sourceTask.deadlineEpochMs, weekOffset)
+          : null;
+        await this.db.insert(tasks).values({
+          id: targetTaskId,
+          userId,
+          title: sourceTask.title,
+          description: '',
+          projectId: sourceTask.projectId,
+          goalId: sourceTask.goalId,
+          goalProcessId: sourceTask.goalProcessId,
+          lifeArea: sourceTask.lifeArea,
+          priority: sourceTask.priority,
+          deadlineEpochMs: dueAt,
+          preferredTime: sourceTask.preferredTime,
+          estimatedMinutes: sourceTask.estimatedMinutes,
+          status: 'TODO',
+          completedAtEpochMs: null,
+          repeatSeriesId: taskSeriesId,
+          revision: 1,
+          updatedAt: new Date(),
+          deletedAt: null,
+        });
+        createdTaskIds.push(targetTaskId);
+      }
+
+      const newBlockId = randomUUID();
+      await this.db.insert(timeBlocks).values({
+        id: newBlockId,
+        userId,
+        taskId: targetTaskId,
+        projectId: session.projectId ?? sourceTask.projectId,
+        title: session.title,
+        startEpochMs: targetStart,
+        endEpochMs: shiftEpochByWeeks(session.endEpochMs, weekOffset),
+        color: session.color,
+        status: 'PLANNED',
+        notes: session.notes ?? '',
+        completedAtEpochMs: null,
+        reminderMinutes: session.reminderMinutes,
+        repeatSeriesId: sessionSeriesId,
+        syncStatus: 'PENDING',
+        revision: 1,
+        updatedAt: new Date(),
+        deletedAt: null,
+      });
+      createdBlockIds.push(newBlockId);
+      await this.syncBlock(userId, newBlockId);
+      await this.syncTaskStatusFromSessions(userId, targetTaskId);
+    }
+
+    return {
+      taskSeriesId,
+      sessionSeriesId,
+      sourceBlockId: blockId,
+      createdTaskIds,
+      createdBlockIds,
+      weeks: weekCount,
+    };
+  }
+
+  /**
+   * Cross-week carry-over for a non-repeated incomplete Session:
+   * keep source Task historical; create a new Task in the target week and move the Session.
+   */
+  async carryOverSession(userId: string, blockId: string, targetStartAt: string) {
+    const session = await this.requireOwnedTimeBlock(userId, blockId);
+    if (!session.taskId) this.badRequest('Session must belong to a Task.');
+    if (session.repeatSeriesId) {
+      this.badRequest('Use series edit scope for repeated Sessions instead of carry-over.');
+    }
+    const sourceTask = await this.requireOwnedTask(userId, session.taskId);
+    const sessions = await this.listActiveSessionsForTask(userId, sourceTask.id);
+    const progress = deriveTaskProgressFromSessions(sessions);
+    const targetStart = new Date(targetStartAt).getTime();
+    const duration = session.endEpochMs - session.startEpochMs;
+    const targetEnd = targetStart + duration;
+
+    const carryNote = buildCarryOverNote(progress);
+    const newTaskId = randomUUID();
+    const horizon = dueHorizonFromDb(sourceTask.preferredTime) ?? 'WEEK';
+    // Align new Task dueAt to Monday of target week when WEEK horizon.
+    const dueAt = horizon === 'WEEK'
+      ? startOfUtcWeekApprox(targetStart)
+      : targetStart;
+
+    await this.db.insert(tasks).values({
+      id: newTaskId,
+      userId,
+      title: sourceTask.title,
+      description: appendCarryOverNote('', carryNote),
+      projectId: sourceTask.projectId,
+      goalId: sourceTask.goalId,
+      goalProcessId: sourceTask.goalProcessId,
+      lifeArea: sourceTask.lifeArea,
+      priority: sourceTask.priority,
+      deadlineEpochMs: dueAt,
+      preferredTime: sourceTask.preferredTime ?? 'WEEK',
+      estimatedMinutes: sourceTask.estimatedMinutes,
+      status: 'TODO',
+      completedAtEpochMs: null,
+      carryOverFromTaskId: sourceTask.id,
+      carryOverNote: carryNote,
+      revision: 1,
+      updatedAt: new Date(),
+      deletedAt: null,
+    });
+
+    await this.db
+      .update(timeBlocks)
+      .set({
+        taskId: newTaskId,
+        startEpochMs: targetStart,
+        endEpochMs: targetEnd,
+        status: 'PLANNED',
+        completedAtEpochMs: null,
+        syncStatus: 'PENDING',
+        revision: session.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(timeBlocks.id, blockId), eq(timeBlocks.userId, userId)));
+
+    await this.syncTaskStatusFromSessions(userId, sourceTask.id);
+    await this.syncTaskStatusFromSessions(userId, newTaskId);
+    await this.syncBlock(userId, blockId);
+
+    return {
+      sourceTaskId: sourceTask.id,
+      newTaskId,
+      timeBlockId: blockId,
+      carryOverNote: carryNote,
+    };
   }
 
   async createProject(userId: string, input: CreateProjectInput) {
@@ -523,6 +987,7 @@ export class PlannerV2Service {
       lifeArea: input.lifeArea ?? 'LIFE',
       description: input.description ?? '',
       targetDate: input.targetDate ?? null,
+      projectType: input.projectType === 'HABIT' ? 'HABIT' : 'STANDARD',
       active: input.active ?? true,
       revision: 1,
       updatedAt: now,
@@ -554,6 +1019,9 @@ export class PlannerV2Service {
         lifeArea: input.lifeArea ?? row.lifeArea,
         description: input.description ?? row.description,
         targetDate: input.targetDate === undefined ? row.targetDate : input.targetDate,
+        projectType: input.projectType === undefined
+          ? row.projectType
+          : input.projectType === 'HABIT' ? 'HABIT' : 'STANDARD',
         active: input.active ?? row.active,
         revision: row.revision + 1,
         updatedAt: new Date(),
@@ -605,7 +1073,8 @@ export class PlannerV2Service {
       closedAt: input.closedAt ?? null,
       currentMilestoneId: input.currentMilestoneId ?? null,
       milestonesJson: JSON.stringify(reconcileMilestones(input.milestones ?? [], input.currentMilestoneId)),
-      systemsJson: JSON.stringify(input.systems ?? []),
+      // Systems retired from active product writes — keep column empty for new Goals.
+      systemsJson: '[]',
       processesJson: JSON.stringify(input.processes ?? []),
       metricObservationsJson: JSON.stringify(input.metricObservations ?? []),
       reflectionJson: JSON.stringify(input.reflection ?? {}),
@@ -648,9 +1117,8 @@ export class PlannerV2Service {
             input.milestones,
             input.currentMilestoneId === undefined ? row.currentMilestoneId : input.currentMilestoneId,
           )),
-        systemsJson: input.systems === undefined
-          ? row.systemsJson
-          : JSON.stringify(input.systems),
+        // Do not write systems — leave historical systems_json untouched.
+        systemsJson: row.systemsJson,
         processesJson: input.processes === undefined
           ? row.processesJson
           : JSON.stringify(input.processes),
@@ -825,6 +1293,11 @@ export class PlannerV2Service {
       endAt: new Date(row.endEpochMs).toISOString(),
       color: row.color,
       status: row.status,
+      notes: row.notes ?? '',
+      completedAt: row.completedAtEpochMs
+        ? new Date(row.completedAtEpochMs).toISOString()
+        : null,
+      repeatSeriesId: row.repeatSeriesId,
       ownership: 'PLANNER' as const,
       googleEventId: row.googleEventId,
       syncStatus: row.syncStatus,
@@ -847,6 +1320,9 @@ export class PlannerV2Service {
       priority: priorityFromDb(row.priority),
       status: taskStatusFromDb(row.status),
       completedAt: row.completedAtEpochMs ? new Date(row.completedAtEpochMs).toISOString() : null,
+      repeatSeriesId: row.repeatSeriesId,
+      carryOverFromTaskId: row.carryOverFromTaskId,
+      carryOverNote: row.carryOverNote,
       revision: row.revision,
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -862,6 +1338,7 @@ export class PlannerV2Service {
       lifeArea: row.lifeArea,
       description: row.description,
       targetDate: row.targetDate,
+      projectType: projectTypeFromDb(row.projectType),
       active: row.active,
       revision: row.revision,
     };
@@ -894,6 +1371,115 @@ export class PlannerV2Service {
       reviewSnapshot: parseGoalReviewSnapshot(row.reviewSnapshotJson),
       revision: row.revision,
     };
+  }
+
+  private async listActiveSessionsForTask(userId: string, taskId: string) {
+    return this.db
+      .select()
+      .from(timeBlocks)
+      .where(
+        and(
+          eq(timeBlocks.userId, userId),
+          eq(timeBlocks.taskId, taskId),
+          isNull(timeBlocks.deletedAt),
+        ),
+      )
+      .orderBy(asc(timeBlocks.startEpochMs));
+  }
+
+  private async syncTaskStatusFromSessions(userId: string, taskId: string) {
+    const row = await this.requireOwnedTask(userId, taskId);
+    const sessions = await this.listActiveSessionsForTask(userId, taskId);
+    const derived = deriveTaskProgressFromSessions(sessions);
+    const nextStatus =
+      derived.derivedTaskStatus === 'DONE'
+        ? 'DONE'
+        : derived.derivedTaskStatus === 'SCHEDULED'
+          ? 'SCHEDULED'
+          : 'TODO';
+    const completedAtEpochMs = nextStatus === 'DONE'
+      ? (row.completedAtEpochMs ?? Date.now())
+      : null;
+    if (row.status === nextStatus && row.completedAtEpochMs === completedAtEpochMs) {
+      return;
+    }
+    await this.db
+      .update(tasks)
+      .set({
+        status: nextStatus,
+        completedAtEpochMs,
+        revision: row.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)));
+  }
+
+  /** Tasks in series at or after the edited instance (by dueAt / id). Never past. */
+  private async listSeriesTasksFrom(
+    userId: string,
+    seriesId: string,
+    fromDueEpochMs: number,
+    includeId: string,
+  ) {
+    const rows = await this.db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.userId, userId),
+          eq(tasks.repeatSeriesId, seriesId),
+          isNull(tasks.deletedAt),
+        ),
+      );
+    return rows.filter((row) => {
+      if (row.id === includeId) return true;
+      const due = row.deadlineEpochMs ?? 0;
+      return due >= fromDueEpochMs;
+    });
+  }
+
+  private async listSeriesBlocksFrom(
+    userId: string,
+    seriesId: string,
+    fromStartEpochMs: number,
+    includeId: string,
+  ) {
+    const rows = await this.db
+      .select()
+      .from(timeBlocks)
+      .where(
+        and(
+          eq(timeBlocks.userId, userId),
+          eq(timeBlocks.repeatSeriesId, seriesId),
+          isNull(timeBlocks.deletedAt),
+        ),
+      );
+    return rows.filter((row) => {
+      if (row.id === includeId) return true;
+      return row.startEpochMs >= fromStartEpochMs;
+    });
+  }
+
+  private async findSeriesTaskForWeek(
+    userId: string,
+    seriesId: string,
+    weekAnchorEpochMs: number,
+  ) {
+    const rows = await this.db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.userId, userId),
+          eq(tasks.repeatSeriesId, seriesId),
+          isNull(tasks.deletedAt),
+        ),
+      );
+    const match = rows.find((row) => {
+      if (row.deadlineEpochMs == null) return false;
+      return Math.abs(row.deadlineEpochMs - weekAnchorEpochMs) < 12 * 60 * 60 * 1000;
+    });
+    return match?.id ?? null;
   }
 
   private async requireOwnedGoal(userId: string, id: string) {

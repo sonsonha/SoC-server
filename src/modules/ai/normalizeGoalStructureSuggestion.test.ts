@@ -21,12 +21,39 @@ function baseValid() {
 }
 
 describe('normalizeGoalStructureSuggestion', () => {
-  it('accepts zero Systems for goals that only need finite Projects', () => {
+  it('accepts goals with only finite Projects and no systems key', () => {
     const parsed = goalStructureSuggestionSchema.parse(normalizeGoalStructureSuggestion({
       projects: [{ title: 'Submit application' }],
-      systems: [],
     }));
-    expect(parsed.systems).toEqual([]);
+    expect(parsed.systems).toBeUndefined();
+    expect(parsed.projects[0]?.projectType).toBe('STANDARD');
+  });
+
+  it('tolerates legacy systems key without requiring it', () => {
+    const parsed = goalStructureSuggestionSchema.parse(normalizeGoalStructureSuggestion({
+      projects: [{ title: 'Submit application' }],
+      systems: [{
+        title: 'Reading',
+        targetType: 'DURATION',
+        targetValue: 180,
+        period: 'WEEK',
+        durationWeeks: 8,
+        unit: 'min',
+      }],
+    }));
+    expect(parsed.systems).toHaveLength(1);
+    expect(parsed.systems?.[0]?.title).toBe('Reading');
+  });
+
+  it('normalizes projectType STANDARD|HABIT', () => {
+    const parsed = goalStructureSuggestionSchema.parse(normalizeGoalStructureSuggestion({
+      projects: [
+        { title: 'Ship MVP', projectType: 'standard' },
+        { title: 'Daily writing', projectType: 'habit' },
+      ],
+    }));
+    expect(parsed.projects[0]?.projectType).toBe('STANDARD');
+    expect(parsed.projects[1]?.projectType).toBe('HABIT');
   });
   it('normalizes lowercase enums, weekly period, and numeric strings', () => {
     const raw = {

@@ -20,7 +20,6 @@ import {
   MAX_AI_CONTEXT_CHARS,
   resolveUserAiContext,
 } from './userAiContext.js';
-import { timeProtectedMinutesToSystemCadence } from './timeProtectedAdapter.js';
 import { normalizeGoalStructureSuggestion } from './normalizeGoalStructureSuggestion.js';
 import { formatZodIssuesSafe, safeTopLevelKeys } from './goalStructureValidation.js';
 
@@ -291,28 +290,9 @@ export class GoalStructuringService {
       period: 'WEEK' as const,
       active: true,
     }));
-    /** Resolve suggested process names within THIS draft only — never fuzzy-match existing goals. */
     const processIdByName = new Map(
       processes.map((p) => [p.name.trim().toLowerCase(), p.id] as const),
     );
-    const timeProtected = timeProtectedMinutesToSystemCadence(
-      suggestion.timeProtectedMinutesPerWeek,
-    );
-    const systems = [
-      ...(suggestion.systems ?? []).map((s) => ({
-        id: randomUUID(), title: s.title, targetType: s.targetType,
-        targetValue: s.targetValue, unit: s.unit ?? null, period: 'WEEK',
-        durationWeeks: s.durationWeeks, startDate: s.startDate ?? null,
-        preferredDays: s.preferredDays ?? null, preferredTime: s.preferredTime ?? null,
-        status: 'ACTIVE',
-      })),
-      ...(!(suggestion.systems ?? []).length ? processes.map((p) => ({
-        id: randomUUID(), title: p.name, cadence: formatProcessCadence(p),
-      })) : []),
-      ...(timeProtected
-        ? [{ id: randomUUID(), title: timeProtected.title, cadence: timeProtected.cadence }]
-        : []),
-    ];
 
     const goalId = randomUUID();
     const now = new Date();
@@ -339,7 +319,7 @@ export class GoalStructuringService {
         closedAt: null,
         currentMilestoneId: milestones[0]?.id ?? null,
         milestonesJson: JSON.stringify(milestones),
-        systemsJson: JSON.stringify(systems),
+        systemsJson: '[]',
         processesJson: JSON.stringify(processes),
         metricObservationsJson: JSON.stringify([]),
         reflectionJson: JSON.stringify({}),
@@ -354,12 +334,14 @@ export class GoalStructuringService {
         title: string;
         goalId: string;
         defaultGoalProcessId: string | null;
+        projectType: 'STANDARD' | 'HABIT';
       }> = [];
 
       for (const project of suggestion.projects) {
         const defaultProcessId = project.suggestedDefaultProcessName?.trim()
           ? processIdByName.get(project.suggestedDefaultProcessName.trim().toLowerCase()) ?? null
           : null;
+        const projectType = project.projectType === 'HABIT' ? 'HABIT' : 'STANDARD';
         const projectId = randomUUID();
         await tx.insert(projects).values({
           id: projectId,
@@ -371,6 +353,7 @@ export class GoalStructuringService {
           lifeArea: 'LIFE',
           description: (project.purpose ?? '').slice(0, 10_000),
           targetDate: null,
+          projectType,
           active: true,
           revision: 1,
           updatedAt: now,
@@ -381,6 +364,7 @@ export class GoalStructuringService {
           title: project.title,
           goalId,
           defaultGoalProcessId: defaultProcessId,
+          projectType,
         });
       }
 
@@ -457,7 +441,7 @@ export class GoalStructuringService {
           })
         : ['(none)']),
       '',
-      'CURRENT WEEKLY SYSTEMS',
+      'CURRENT WEEKLY PROCESSES',
       ...(opts.snapshot.processes.length
         ? opts.snapshot.processes.map(
             (p) =>
@@ -504,18 +488,6 @@ function formatPrimaryMetric(suggestion: GoalStructureSuggestion): string {
   const target = metric.targetValue == null ? '—' : String(metric.targetValue);
   const unit = metric.unit ? ` ${metric.unit}` : '';
   return `${metric.name}\nCurrent: ${current}${unit}\nTarget: ${target}${unit}`.trim();
-}
-
-function formatProcessCadence(p: {
-  measurementType: string;
-  targetValue: number;
-  unit?: string;
-}): string {
-  if (p.measurementType === 'DURATION') {
-    const hours = p.targetValue >= 60 ? `${Math.round(p.targetValue / 60)}h` : `${p.targetValue}min`;
-    return `${hours} / week`;
-  }
-  return `${p.targetValue}${p.unit ? ` ${p.unit}` : ''} / week`;
 }
 
 /** Test helper — clear rate limit map between tests. */

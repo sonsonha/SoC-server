@@ -65,6 +65,9 @@ describe('goal context exporters', () => {
     expect(md).toContain('Get a Backend Developer Job');
     expect(md).toContain('Quality Applications');
     expect(md).toContain('Job Applications');
+    expect(md).toContain('## Processes');
+    expect(md).toContain('Type: Project');
+    expect(md).not.toContain('## Systems / Processes');
     expect(md).toContain('BACKGROUND');
     expect(md).not.toMatch(/Bearer |refresh_token|google_sub|pos_session/);
     expect(md).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
@@ -86,7 +89,7 @@ describe('goal context exporters', () => {
         { title: 'Interview pipeline', status: 'current' },
       ],
       processes: [{ name: 'Quality Applications', completed: 4, planned: 5, target: 5, unit: 'apps' }],
-      projects: [{ title: 'Job Applications', purpose: 'Pipeline', nextAction: 'Apply to 2 roles' }],
+      projects: [{ title: 'Job Applications', purpose: 'Pipeline', projectType: 'STANDARD', nextAction: 'Apply to 2 roles' }],
       tasks: [{ title: 'Research 3 companies', dueHorizon: 'WEEK', scheduled: false, done: false }],
       timeProtectedMinutes: 180,
       progress: { consistencyMetWeeks: 7, consistencyTotalWeeks: 8, insight: 'Steady' },
@@ -95,11 +98,32 @@ describe('goal context exporters', () => {
     expect(md).toContain('Classification:\nFOCUS');
     expect(md).toContain('[x] CV ready');
     expect(md).toContain('[>] Interview pipeline');
+    expect(md).toContain('## Processes');
+    expect(md).not.toContain('## Systems / Processes');
     expect(md).toContain('Quality Applications');
     expect(md).toContain('Job Applications');
+    expect(md).toContain('Type: Project');
+    expect(md).toContain('Apply to 2 roles');
     expect(md).toContain('Research 3 companies — WEEK — unscheduled');
     expect(md).toContain('7 / 8 weeks');
     expect(md).not.toMatch(/Bearer |token|calendarId/);
+  });
+
+  it('exports Habit projects and legacy systems separately', () => {
+    const md = exportGoalFullContextMarkdown({
+      aiContext: '',
+      goal: { title: 'Stay healthy' },
+      milestones: [],
+      processes: [{ name: 'Movement', target: 3 }],
+      systems: [{ title: 'Old run system', targetValue: 3, unit: 'runs', durationWeeks: 8, status: 'ACTIVE' }],
+      projects: [{ title: 'Daily walk', projectType: 'HABIT', purpose: 'Ongoing movement' }],
+      tasks: [],
+    });
+    expect(md).toContain('## Processes');
+    expect(md).toContain('## Legacy systems (inactive)');
+    expect(md).toContain('Old run system');
+    expect(md).toContain('Type: Habit');
+    expect(md).not.toContain('## Systems / Processes');
   });
 });
 

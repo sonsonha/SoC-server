@@ -29,6 +29,9 @@ const createTimeBlockSchema = z.object({
   endAt: isoDateTime,
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   reminderMinutes: z.number().int().min(0).max(30 * 24 * 60).nullable().optional(),
+  notes: z.string().max(10_000).optional(),
+  status: z.enum(['PLANNED', 'DONE']).optional(),
+  repeatSeriesId: z.string().min(1).nullable().optional(),
 });
 
 const createProjectSchema = z.object({
@@ -40,7 +43,18 @@ const createProjectSchema = z.object({
   description: z.string().max(10_000).optional(),
   active: z.boolean().optional(),
   targetDate: z.string().max(32).nullable().optional(),
+  projectType: z.enum(['STANDARD', 'HABIT']).optional(),
 });
+
+const seriesScopeSchema = z.enum(['THIS_INSTANCE', 'THIS_AND_FUTURE']);
+
+const repeatRangeSchema = z.object({
+  weeks: z.number().int().positive().max(52).optional(),
+  until: z.string().max(64).nullable().optional(),
+}).refine(
+  (value) => value.weeks != null || value.until != null,
+  { message: 'Provide weeks or until' },
+);
 
 const milestoneSchema = z.object({
   id: z.string().min(1),
@@ -183,8 +197,19 @@ export async function plannerV2Routes(
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
     const body = createTaskSchema.partial().extend({
       status: z.enum(['INBOX', 'SCHEDULED', 'DONE']).optional(),
+      seriesScope: seriesScopeSchema.optional(),
+      repeatSeriesId: z.string().min(1).nullable().optional(),
+      carryOverFromTaskId: z.string().min(1).nullable().optional(),
+      carryOverNote: z.string().max(4_000).nullable().optional(),
     }).parse(request.body ?? {});
     return reply.send(await deps.planner.patchTask(userId, params.id, body));
+  });
+
+  app.post('/v2/tasks/:id/repeat', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = repeatRangeSchema.parse(request.body ?? {});
+    return reply.code(201).send(await deps.planner.repeatTask(userId, params.id, body));
   });
 
   app.get('/v2/tasks/:id/time-blocks', { preHandler: auth }, async (request, reply) => {
@@ -208,8 +233,33 @@ export async function plannerV2Routes(
   app.patch('/v2/time-blocks/:id', { preHandler: auth }, async (request, reply) => {
     const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    const body = createTimeBlockSchema.partial().parse(request.body ?? {});
+    const body = createTimeBlockSchema.partial().extend({
+      seriesScope: seriesScopeSchema.optional(),
+    }).parse(request.body ?? {});
     return reply.send(await deps.planner.patchTimeBlock(userId, params.id, body));
+  });
+
+  app.post('/v2/time-blocks/:id/complete', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({ done: z.boolean() }).parse(request.body ?? { done: true });
+    return reply.send(await deps.planner.setSessionCompletion(userId, params.id, body.done));
+  });
+
+  app.post('/v2/time-blocks/:id/repeat', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = repeatRangeSchema.parse(request.body ?? {});
+    return reply.code(201).send(await deps.planner.repeatSession(userId, params.id, body));
+  });
+
+  app.post('/v2/time-blocks/:id/carry-over', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({ targetStartAt: isoDateTime }).parse(request.body ?? {});
+    return reply.code(201).send(
+      await deps.planner.carryOverSession(userId, params.id, body.targetStartAt),
+    );
   });
 
   app.delete('/v2/time-blocks/:id', { preHandler: auth }, async (request, reply) => {

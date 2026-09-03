@@ -82,6 +82,33 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     return created;
   }
 
+  /** Session-evidence completion: ensure one Session exists, then Mark Done. */
+  async function completeTaskWithSession(
+    task: { id: string; title: string },
+    dayOffset = 0,
+  ) {
+    const existing = await planner.getTaskTimeBlocks(userId, task.id);
+    if (existing.length === 0) {
+      const start = addDays(weekStart, dayOffset).getTime() + 9 * 3_600_000;
+      await trackBlock({
+        taskId: task.id,
+        title: task.title,
+        startAt: vnIso(start),
+        endAt: vnIso(start + 30 * 60_000),
+      });
+    }
+    return planner.patchTask(userId, task.id, { status: 'DONE' });
+  }
+
+  async function reopenTaskViaSessions(taskId: string) {
+    const blocks = await planner.getTaskTimeBlocks(userId, taskId);
+    for (const block of blocks) {
+      if (block.status === 'DONE') {
+        await planner.setSessionCompletion(userId, block.id, false);
+      }
+    }
+  }
+
   it('COUNT: complete then reopen Apply — SaaS Backend Engineer (4/5 → 5/5 → 4/5)', async () => {
     const procId = 'proc-apps';
     const goal = await planner.createGoal(userId, {
@@ -106,7 +133,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
         dueHorizon: 'WEEK',
         dueAt: vnIso(weekStart.getTime()),
       });
-      await planner.patchTask(userId, task.id, { status: 'DONE' });
+      await completeTaskWithSession(task, index);
     }
     const open = await trackTask('Apply — SaaS Backend Engineer', {
       projectId: project.id,
@@ -120,14 +147,14 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     let snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Quality Applications')).toMatchObject({ completed: 4, target: 5 });
 
-    await planner.patchTask(userId, open.id, { status: 'DONE' });
+    await completeTaskWithSession(open, 4);
     snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Quality Applications').completed).toBe(5);
 
     const processesJsonAfter = (await db.select().from(goals).where(inArray(goals.id, [goal.id])))[0]!.processesJson;
     expect(processesJsonAfter).toBe(processesJsonBefore);
 
-    await planner.patchTask(userId, open.id, { status: 'INBOX' });
+    await reopenTaskViaSessions(open.id);
     snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Quality Applications').completed).toBe(4);
   });
@@ -146,7 +173,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
         dueHorizon: 'WEEK',
         dueAt: vnIso(weekStart.getTime()),
       });
-      await planner.patchTask(userId, task.id, { status: 'DONE' });
+      await completeTaskWithSession(task, index);
     }
     const open = await trackTask('IELTS Speaking Part 3 — Education', {
       goalId: goal.id,
@@ -158,7 +185,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     let snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Speaking Practice')).toMatchObject({ completed: 2, target: 3 });
 
-    await planner.patchTask(userId, open.id, { status: 'DONE' });
+    await completeTaskWithSession(open, 2);
     snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     expect(processNamed(snapshot.progress, 'Speaking Practice').completed).toBe(3);
   });
@@ -185,7 +212,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
         startAt: vnIso(start),
         endAt: vnIso(start + 90 * 60_000),
       });
-      await planner.patchTask(userId, task.id, { status: 'DONE' });
+      await completeTaskWithSession(task, index + 1);
     }
 
     const openStart = addDays(weekStart, 5).getTime() + 14 * 3_600_000;
@@ -214,7 +241,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
     expect(resized.planned).toBe(before.planned + 1);
     expect(resized.completed).toBe(before.completed);
 
-    await planner.patchTask(userId, open.id, { status: 'DONE' });
+    await completeTaskWithSession(open, 5);
     snapshot = await planner.getGoalProgress(userId, goal.id, nowIso);
     const done = processNamed(snapshot.progress, 'Technical Preparation');
     expect(done.completed).toBe(before.completed + 2);
@@ -242,7 +269,7 @@ describe.skipIf(!hasDb)('Goal Progress mutations (PlannerV2Service)', () => {
       startAt: vnIso(doneStart),
       endAt: vnIso(doneStart + 90 * 60_000),
     });
-    await planner.patchTask(userId, doneTask.id, { status: 'DONE' });
+    await completeTaskWithSession(doneTask, 1);
 
     const openStart = addDays(weekStart, 5).getTime() + 14 * 3_600_000;
     const open = await trackTask('Review transactions and isolation', {

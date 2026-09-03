@@ -209,9 +209,10 @@ export async function aiGoalRoutes(
           unit: p.unit,
         })),
         systems: (goal.systems ?? []).map((s: { title: string; targetValue?: number; unit?: string | null; durationWeeks?: number; status?: string }) => s),
-        projects: linkedProjects.map((p: { title: string; description?: string }) => ({
+        projects: linkedProjects.map((p: { title: string; description?: string; projectType?: string }) => ({
           title: p.title,
           purpose: p.description ?? null,
+          projectType: p.projectType === 'HABIT' ? 'HABIT' as const : 'STANDARD' as const,
           nextAction:
             linkedTasks.find((t: { projectId?: string | null; status?: string; title: string }) =>
               t.status !== 'DONE' && linkedProjects.find((lp: { id: string; title: string }) =>

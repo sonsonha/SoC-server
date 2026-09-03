@@ -155,6 +155,13 @@
       "when": 1720000021000,
       "tag": "0023_ai_user_context",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1720000022000,
+      "tag": "0024_habit_session_repeat",
+      "breakpoints": true
     }
   ]
 }

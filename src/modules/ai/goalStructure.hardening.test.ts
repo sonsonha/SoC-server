@@ -199,7 +199,8 @@ describe('copy exporters regression', () => {
     expect(md).toMatch(/Outcome/i);
     expect(md).toMatch(/Metrics/i);
     expect(md).toMatch(/Milestones/i);
-    expect(md).toMatch(/Processes/i);
+    expect(md).toMatch(/## Processes/);
+    expect(md).not.toMatch(/## Systems \/ Processes/);
     expect(md).toMatch(/Projects/i);
     expect(md).toMatch(/Time Protected/i);
     expect(md).toMatch(/Next Actions/i);
@@ -351,8 +352,13 @@ describe('GoalStructuringService.accept atomicity', () => {
     const { GoalStructuringService } = await import('./goalStructuringService.js');
     const { goals, projects, tasks } = await import('../../infrastructure/db/schema/index.js');
 
-    const insertedProjects: Array<{ defaultGoalProcessId: string | null; title: string }> = [];
+    const insertedProjects: Array<{
+      defaultGoalProcessId: string | null;
+      title: string;
+      projectType?: string;
+    }> = [];
     let processIdOnGoal: string | null = null;
+    let systemsJsonWritten: string | null = null;
 
     const tx = {
       insert(table: unknown) {
@@ -361,12 +367,14 @@ describe('GoalStructuringService.accept atomicity', () => {
             if (table === goals) {
               const procs = JSON.parse(String(row.processesJson)) as Array<{ id: string; name: string }>;
               processIdOnGoal = procs.find((p) => p.name === 'Technical Preparation')?.id ?? null;
+              systemsJsonWritten = String(row.systemsJson);
               return;
             }
             if (table === projects) {
               insertedProjects.push({
                 title: String(row.title),
                 defaultGoalProcessId: (row.defaultGoalProcessId as string | null) ?? null,
+                projectType: String(row.projectType ?? 'STANDARD'),
               });
               return;
             }
@@ -405,6 +413,11 @@ describe('GoalStructuringService.accept atomicity', () => {
           {
             title: 'Backend Interview Preparation',
             suggestedDefaultProcessName: 'Technical Preparation',
+            projectType: 'STANDARD',
+          },
+          {
+            title: 'Daily practice',
+            projectType: 'HABIT',
           },
         ],
         processes: [
@@ -421,11 +434,22 @@ describe('GoalStructuringService.accept atomicity', () => {
         milestones: [{ title: 'Ready' }],
         nextActions: [],
         assumptions: [],
+        timeProtectedMinutesPerWeek: 180,
+        systems: [{
+          title: 'Should not be written',
+          targetType: 'COUNT',
+          targetValue: 5,
+          period: 'WEEK',
+          durationWeeks: 8,
+        }],
       },
     });
 
+    expect(systemsJsonWritten).toBe('[]');
     expect(processIdOnGoal).toBeTruthy();
     expect(insertedProjects[0]?.defaultGoalProcessId).toBe(processIdOnGoal);
+    expect(insertedProjects[0]?.projectType).toBe('STANDARD');
+    expect(insertedProjects[1]?.projectType).toBe('HABIT');
     expect(result.projects[0]?.defaultGoalProcessId).toBe(processIdOnGoal);
   });
 });

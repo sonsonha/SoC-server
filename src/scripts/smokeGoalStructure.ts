@@ -33,7 +33,7 @@ async function main() {
     'Software engineer interested in backend roles.',
     '',
     'CURRENT PLANNER CONTEXT',
-    'ACTIVE GOALS\n(none)\nACTIVE PROJECTS\n(none)\nCURRENT WEEKLY SYSTEMS\n(none)',
+    'ACTIVE GOALS\n(none)\nACTIVE PROJECTS\n(none)\nCURRENT WEEKLY PROCESSES\n(none)',
     '',
     'NEW GOAL INPUT',
     'Title: Get a Backend Developer job',

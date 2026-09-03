@@ -147,6 +147,15 @@ function normalizeProcess(value: unknown): unknown {
   };
 }
 
+function normalizeProjectType(value: unknown): unknown {
+  if (value == null || value === '') return 'STANDARD';
+  if (typeof value !== 'string') return value;
+  const key = value.trim().toUpperCase();
+  if (key === 'HABIT' || key === 'HABITS' || key === 'RECURRING') return 'HABIT';
+  if (key === 'STANDARD' || key === 'PROJECT' || key === 'FINITE') return 'STANDARD';
+  return value;
+}
+
 function normalizeProject(value: unknown): unknown {
   const obj = asRecord(value);
   if (!obj) return value;
@@ -154,11 +163,13 @@ function normalizeProject(value: unknown): unknown {
     ...obj,
     title: emptyToUndefined(obj.title),
     purpose: emptyToUndefined(obj.purpose) ?? null,
+    projectType: normalizeProjectType(obj.projectType),
     suggestedDefaultProcessName: emptyToUndefined(obj.suggestedDefaultProcessName) ?? null,
     rationale: emptyToUndefined(obj.rationale) ?? null,
   };
 }
 
+/** Legacy Systems key — tolerate if present; not required for new suggestions. */
 function normalizeSystem(value: unknown): unknown {
   const obj = asRecord(value);
   if (!obj) return value;
@@ -205,7 +216,10 @@ export function normalizeGoalStructureSuggestion(raw: unknown): unknown {
     metrics: ensureArray(obj.metrics).map(normalizeMetric),
     milestones: ensureArray(obj.milestones).map(normalizeMilestone),
     processes: ensureArray(obj.processes).map(normalizeProcess),
-    systems: ensureArray(obj.systems).map(normalizeSystem),
+    // Legacy only — omit when absent so systems is not required.
+    ...(obj.systems != null
+      ? { systems: ensureArray(obj.systems).map(normalizeSystem) }
+      : {}),
     projects: Array.isArray(obj.projects) ? obj.projects.map(normalizeProject) : obj.projects,
     timeProtectedMinutesPerWeek: coerceNumber(
       emptyToUndefined(obj.timeProtectedMinutesPerWeek) ?? null,

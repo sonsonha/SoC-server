@@ -31,6 +31,12 @@ export const tasks = pgTable(
   rescheduleCount: integer('reschedule_count').notNull().default(0),
   status: text('status').notNull().default('TODO'),
   completedAtEpochMs: bigint('completed_at_epoch_ms', { mode: 'number' }),
+  /** Links materialized Task instances from Repeat Task / Repeat Session. */
+  repeatSeriesId: text('repeat_series_id'),
+  /** Source Task when a Session was carried into a new horizon. */
+  carryOverFromTaskId: text('carry_over_from_task_id'),
+  /** Human-readable provenance for cross-week carry-over. */
+  carryOverNote: text('carry_over_note'),
   verificationLevel: text('verification_level').notNull().default('SELF'),
   isAnchorCandidate: boolean('is_anchor_candidate').notNull().default(false),
   estimateBiasFactor: real('estimate_bias_factor').notNull().default(1),
@@ -41,5 +47,6 @@ export const tasks = pgTable(
     index('tasks_user_id_status_idx').on(t.userId, t.status),
     index('tasks_user_id_project_id_idx').on(t.userId, t.projectId),
     index('tasks_user_id_goal_id_idx').on(t.userId, t.goalId),
+    index('tasks_user_id_repeat_series_id_idx').on(t.userId, t.repeatSeriesId),
   ],
 );

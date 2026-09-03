@@ -57,6 +57,7 @@ export const goalStructureSuggestionSchema = z.object({
     )
     .max(8)
     .default([]),
+  /** Legacy parse-compat only — not required in prompt; accept ignores. */
   systems: z.array(z.object({
     title: z.string().trim().min(1).max(240),
     targetType: z.enum(['COUNT', 'DURATION']),
@@ -74,6 +75,7 @@ export const goalStructureSuggestionSchema = z.object({
       z.object({
         title: z.string().trim().min(1).max(240),
         purpose: z.string().max(2_000).nullish(),
+        projectType: z.enum(['STANDARD', 'HABIT']).default('STANDARD'),
         suggestedDefaultProcessName: z.string().max(240).nullish(),
         rationale: z.string().max(2_000).nullish(),
       }),
@@ -105,19 +107,21 @@ Personal OS semantics — never collapse these concepts:
 Goal = outcome to make true (desired end state)
 Metric = how that outcome is measured (may need clarification)
 Milestone = meaningful checkpoint / state transition toward the outcome
-Process / System = repeated measurable weekly behavior
-Project = finite body of work that advances the Goal
+Process = repeated measurable weekly behavior (measurement / cadence tracking)
+Project = body of work that advances the Goal
+  - STANDARD = finite body of work with a clear completion
+  - HABIT = repeated/ongoing behavior modeled as a Project with projectType HABIT
 Task = concrete executable next action
 
 Rules:
 - Prefer few meaningful items: 3–7 milestones, 1–4 processes, 1–4 projects.
 - projects MUST be present as a JSON array with at least one Project.
-- Always include these array keys (use [] when no appropriate items): metrics, milestones, processes, systems, nextActions, assumptions. projects must not be empty.
-- Distinguish Processes (repeatable) from Projects (finite).
+- Always include these array keys (use [] when no appropriate items): metrics, milestones, processes, nextActions, assumptions. projects must not be empty.
+- Distinguish Processes (measurement) from Projects (work containers). Use projectType HABIT only when the Goal needs a repeated/ongoing behavior as a Habit Project — do not force a Habit into every Goal.
 - Do not invent false precision. If a metric is unclear, set needsUserDecision=true and list possibleAlternatives with a recommended candidate in rationale.
 - Do not invent personal facts absent from USER AI CONTEXT.
 - Avoid duplicate Projects already listed in CURRENT PLANNER CONTEXT.
-- Respect existing weekly workload — do not pile on many new systems.
+- Respect existing weekly workload — do not pile on many new Processes or Habit Projects.
 - Avoid generic motivational advice and overplanning.
 - Process metricType is COUNT or DURATION only; period is always WEEK.
 - For DURATION processes, targetValue is minutes (e.g. 3h → 180, unit "min").
@@ -129,6 +133,7 @@ Exact allowed enum values:
 - metrics.metricType: COUNT | DURATION | NUMBER | BOOLEAN | PERCENTAGE | CUSTOM
 - processes.metricType: COUNT | DURATION
 - processes.period: WEEK
+- projects.projectType: STANDARD | HABIT
 - reviewCadence: WEEKLY | MONTHLY | MILESTONE
 
 JSON shape:
@@ -155,10 +160,10 @@ JSON shape:
     "rationale": string|null,
     "confidence": "HIGH"|"MEDIUM"|"LOW"
   }],
-  "systems": [{ "title": string, "targetType": "COUNT"|"DURATION", "targetValue": number, "unit": string|null, "period": "WEEK", "durationWeeks": number, "startDate": string|null, "preferredDays": number[]|null, "preferredTime": string|null, "rationale": string|null }],
   "projects": [{
     "title": string,
     "purpose": string|null,
+    "projectType": "STANDARD"|"HABIT",
     "suggestedDefaultProcessName": string|null,
     "rationale": string|null
   }],

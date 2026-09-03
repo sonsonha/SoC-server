@@ -20,6 +20,11 @@ export const timeBlocks = pgTable(
   endEpochMs: bigint('end_epoch_ms', { mode: 'number' }).notNull(),
   color: text('color').notNull().default('#705CF6'),
   status: text('status').notNull().default('PLANNED'),
+  /** Optional intention/result for one execution session (separate from Task notes). */
+  notes: text('notes').notNull().default(''),
+  completedAtEpochMs: bigint('completed_at_epoch_ms', { mode: 'number' }),
+  /** Links corresponding Sessions across materialized weeks (Repeat Session / Repeat Task). */
+  repeatSeriesId: text('repeat_series_id'),
   origin: text('origin').notNull().default('PLANNER'),
   calendarId: text('calendar_id'),
   googleEventId: text('google_event_id'),
@@ -33,5 +38,6 @@ export const timeBlocks = pgTable(
     index('time_blocks_user_id_idx').on(t.userId),
     index('time_blocks_user_id_task_id_idx').on(t.userId, t.taskId),
     index('time_blocks_user_id_start_idx').on(t.userId, t.startEpochMs),
+    index('time_blocks_user_id_repeat_series_id_idx').on(t.userId, t.repeatSeriesId),
   ],
 );

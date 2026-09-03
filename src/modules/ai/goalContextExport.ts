@@ -47,24 +47,19 @@ export function exportSuggestionMarkdown(opts: {
   for (const m of s.milestones) lines.push(`- ${m.title}`);
   lines.push('');
 
-  lines.push('## Systems / Processes', '');
-  for (const system of (s.systems ?? [])) {
-    lines.push(`### ${system.title}`);
-    lines.push(`Target: ${system.targetValue}${system.unit ? ` ${system.unit}` : ''} / week`);
-    lines.push(`Duration: ${system.durationWeeks} weeks`);
-    if (system.rationale) lines.push(`Why: ${system.rationale}`);
-    lines.push('');
-  }
+  lines.push('## Processes', '');
   for (const p of s.processes) {
     lines.push(`### ${p.name}`);
     lines.push(`${p.targetValue}${p.unit ? ` ${p.unit}` : ''} / week (${p.metricType})`);
     if (p.rationale) lines.push(`Why: ${p.rationale}`);
     lines.push('');
   }
+  if (!s.processes.length) lines.push('(none)', '');
 
   lines.push('## Projects', '');
   for (const p of s.projects) {
     lines.push(`### ${p.title}`);
+    lines.push(`Type: ${p.projectType === 'HABIT' ? 'Habit' : 'Project'}`);
     if (p.purpose) lines.push(`Purpose: ${p.purpose}`);
     if (p.suggestedDefaultProcessName) lines.push(`Default process: ${p.suggestedDefaultProcessName}`);
     if (p.rationale) lines.push(`Why: ${p.rationale}`);
@@ -104,7 +99,7 @@ export function exportSuggestionMarkdown(opts: {
     '## Context for an external AI',
     '',
     'This is a draft suggestion from Personal OS. Help improve it without inventing personal facts.',
-    'Distinguish Goal outcome, Metric, Milestone, Process, Project, and Task.',
+    'Distinguish Goal outcome, Metric, Milestone, Process, Project (including Habit Projects), and Task.',
   );
 
   return lines.join('\n');
@@ -129,10 +124,12 @@ export type GoalContextExportInput = {
     target: number;
     unit?: string;
   }>;
+  /** Legacy systems_json only — shown as inactive when present. */
   systems?: Array<{ title: string; targetValue?: number; unit?: string | null; durationWeeks?: number; status?: string }>;
   projects: Array<{
     title: string;
     purpose?: string | null;
+    projectType?: 'STANDARD' | 'HABIT' | null;
     nextAction?: string | null;
   }>;
   tasks: Array<{
@@ -184,14 +181,7 @@ export function exportGoalFullContextMarkdown(input: GoalContextExportInput): st
   }
   lines.push('');
 
-  lines.push('## Systems / Processes', '');
-  for (const s of (input.systems ?? [])) {
-    lines.push(`### ${s.title}`);
-    lines.push(`Target: ${s.targetValue ?? '—'}${s.unit ? ` ${s.unit}` : ''} / week`);
-    if (s.durationWeeks) lines.push(`Duration: ${s.durationWeeks} weeks`);
-    if (s.status) lines.push(`Status: ${s.status}`);
-    lines.push('');
-  }
+  lines.push('## Processes', '');
   for (const p of input.processes) {
     lines.push(`### ${p.name}`);
     lines.push(`Completed: ${p.completed ?? '—'}`);
@@ -199,14 +189,29 @@ export function exportGoalFullContextMarkdown(input: GoalContextExportInput): st
     lines.push(`Target: ${p.target}${p.unit ? ` ${p.unit}` : ''} / week`);
     lines.push('');
   }
+  if (!input.processes.length) lines.push('(none)', '');
+
+  const legacySystems = input.systems ?? [];
+  if (legacySystems.length) {
+    lines.push('## Legacy systems (inactive)', '');
+    for (const s of legacySystems) {
+      lines.push(`### ${s.title}`);
+      lines.push(`Target: ${s.targetValue ?? '—'}${s.unit ? ` ${s.unit}` : ''} / week`);
+      if (s.durationWeeks) lines.push(`Duration: ${s.durationWeeks} weeks`);
+      if (s.status) lines.push(`Status: ${s.status}`);
+      lines.push('');
+    }
+  }
 
   lines.push('## Linked Projects', '');
   for (const p of input.projects) {
     lines.push(`### ${p.title}`);
+    lines.push(`Type: ${p.projectType === 'HABIT' ? 'Habit' : 'Project'}`);
     if (p.purpose) lines.push(`Purpose:\n${p.purpose}`);
     if (p.nextAction) lines.push(`Next action:\n${p.nextAction}`);
     lines.push('');
   }
+  if (!input.projects.length) lines.push('(none)', '');
 
   lines.push('## Current Tasks / Remaining Work', '');
   for (const t of input.tasks.filter((task) => !task.done)) {
@@ -244,7 +249,7 @@ export function exportGoalFullContextMarkdown(input: GoalContextExportInput): st
     '',
     'Please use the information above as the source of truth.',
     'Help me evaluate or improve this Goal without assuming I want to replace the existing structure.',
-    'When recommending changes, distinguish: Goal outcome, Metric, Milestone, System / Process, Project, Task.',
+    'When recommending changes, distinguish: Goal outcome, Metric, Milestone, Process, Project (including Habit Projects), Task.',
     'Do not invent personal facts not contained in this context.',
   );
 
