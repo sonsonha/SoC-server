@@ -8,6 +8,7 @@ import { createPersonalOsUserHook } from '../middleware/personalOsAuth.js';
 
 const isoDateTime = z.string().datetime({ offset: true });
 const priority = z.enum(['LOW', 'NORMAL', 'HIGH', 'DROP', 'P1', 'P2', 'P3', 'P4']);
+const seriesScopeSchema = z.enum(['THIS_INSTANCE', 'THIS_AND_FUTURE']);
 
 const createTaskSchema = z.object({
   title: z.string().trim().min(1).max(240),
@@ -32,6 +33,7 @@ const createTimeBlockSchema = z.object({
   notes: z.string().max(10_000).optional(),
   status: z.enum(['PLANNED', 'DONE']).optional(),
   repeatSeriesId: z.string().min(1).nullable().optional(),
+  seriesScope: seriesScopeSchema.optional(),
 });
 
 const createProjectSchema = z.object({
@@ -45,8 +47,6 @@ const createProjectSchema = z.object({
   targetDate: z.string().max(32).nullable().optional(),
   projectType: z.enum(['STANDARD', 'HABIT']).optional(),
 });
-
-const seriesScopeSchema = z.enum(['THIS_INSTANCE', 'THIS_AND_FUTURE']);
 
 const repeatRangeSchema = z.object({
   weeks: z.number().int().positive().max(52).optional(),
@@ -212,6 +212,23 @@ export async function plannerV2Routes(
     return reply.code(201).send(await deps.planner.repeatTask(userId, params.id, body));
   });
 
+  app.get('/v2/tasks/:id/repeat', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    return reply.send(await deps.planner.getTaskRepeatSummary(userId, params.id));
+  });
+
+  app.patch('/v2/tasks/:id/repeat', { preHandler: auth }, async (request, reply) => {
+    const userId = requireUserId(request);
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const body = z.object({
+      weeks: z.number().int().positive().max(52).optional(),
+      until: z.string().max(64).nullable().optional(),
+      stopAfterThis: z.boolean().optional(),
+    }).parse(request.body ?? {});
+    return reply.send(await deps.planner.updateTaskRepeat(userId, params.id, body));
+  });
+
   app.get('/v2/tasks/:id/time-blocks', { preHandler: auth }, async (request, reply) => {
     const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
@@ -265,7 +282,12 @@ export async function plannerV2Routes(
   app.delete('/v2/time-blocks/:id', { preHandler: auth }, async (request, reply) => {
     const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    return reply.send(await deps.planner.deleteTimeBlock(userId, params.id));
+    const query = z.object({
+      seriesScope: seriesScopeSchema.optional(),
+    }).parse(request.query ?? {});
+    return reply.send(await deps.planner.deleteTimeBlock(userId, params.id, {
+      seriesScope: query.seriesScope,
+    }));
   });
 
   app.post('/v2/projects', { preHandler: auth }, async (request, reply) => {

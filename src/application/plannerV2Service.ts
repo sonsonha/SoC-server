@@ -201,6 +201,8 @@ type CreateTimeBlockInput = {
   notes?: string;
   status?: 'PLANNED' | 'DONE';
   repeatSeriesId?: string | null;
+  /** When adding a Session to a repeated Task: propagate to future Task instances. */
+  seriesScope?: SeriesEditScope;
 };
 
 type PatchTimeBlockInput = Partial<CreateTimeBlockInput> & {
@@ -521,10 +523,14 @@ export class PlannerV2Service {
     const start = new Date(input.startAt).getTime();
     const end = new Date(input.endAt).getTime();
     this.validateWindow(start, end);
-    if (input.taskId) await this.requireOwnedTask(userId, input.taskId);
+    const task = input.taskId ? await this.requireOwnedTask(userId, input.taskId) : null;
     if (input.projectId) await this.requireOwnedProject(userId, input.projectId);
     const id = randomUUID();
     const status = input.status === 'DONE' ? 'DONE' : 'PLANNED';
+    const propagateFuture = input.seriesScope === 'THIS_AND_FUTURE' && Boolean(task?.repeatSeriesId);
+    const sessionSeriesId = propagateFuture
+      ? (input.repeatSeriesId ?? randomUUID())
+      : (input.repeatSeriesId ?? null);
     await this.db.insert(timeBlocks).values({
       id,
       userId,
@@ -538,7 +544,7 @@ export class PlannerV2Service {
       notes: input.notes ?? '',
       completedAtEpochMs: status === 'DONE' ? Date.now() : null,
       reminderMinutes: input.reminderMinutes ?? null,
-      repeatSeriesId: input.repeatSeriesId ?? null,
+      repeatSeriesId: sessionSeriesId,
       syncStatus: 'PENDING',
       revision: 1,
       updatedAt: new Date(),
@@ -547,7 +553,50 @@ export class PlannerV2Service {
     if (input.taskId) {
       await this.syncTaskStatusFromSessions(userId, input.taskId);
     }
-    return this.syncBlock(userId, id);
+    const created = await this.syncBlock(userId, id);
+
+    if (propagateFuture && task?.repeatSeriesId && sessionSeriesId) {
+      const futureTasks = await this.listSeriesTasksFrom(
+        userId,
+        task.repeatSeriesId,
+        task.deadlineEpochMs ?? start,
+        task.id,
+      );
+      const duration = end - start;
+      for (const future of futureTasks) {
+        if (future.id === task.id) continue;
+        const weekDelta = task.deadlineEpochMs != null && future.deadlineEpochMs != null
+          ? Math.round((future.deadlineEpochMs - task.deadlineEpochMs) / (7 * 86_400_000))
+          : 0;
+        if (weekDelta <= 0) continue;
+        const futureStart = shiftEpochByWeeks(start, weekDelta);
+        const futureEnd = futureStart + duration;
+        const blockId = randomUUID();
+        await this.db.insert(timeBlocks).values({
+          id: blockId,
+          userId,
+          taskId: future.id,
+          projectId: input.projectId ?? future.projectId,
+          title: input.title,
+          startEpochMs: futureStart,
+          endEpochMs: futureEnd,
+          color: input.color ?? '#705CF6',
+          status: 'PLANNED',
+          notes: input.notes ?? '',
+          completedAtEpochMs: null,
+          reminderMinutes: input.reminderMinutes ?? null,
+          repeatSeriesId: sessionSeriesId,
+          syncStatus: 'PENDING',
+          revision: 1,
+          updatedAt: new Date(),
+          deletedAt: null,
+        });
+        await this.syncBlock(userId, blockId);
+        await this.syncTaskStatusFromSessions(userId, future.id);
+      }
+    }
+
+    return created;
   }
 
   async patchTimeBlock(userId: string, id: string, input: PatchTimeBlockInput) {
@@ -626,25 +675,35 @@ export class PlannerV2Service {
     return this.syncBlock(userId, id);
   }
 
-  async deleteTimeBlock(userId: string, id: string) {
+  async deleteTimeBlock(
+    userId: string,
+    id: string,
+    opts?: { seriesScope?: SeriesEditScope },
+  ) {
     const row = await this.requireOwnedTimeBlock(userId, id);
-    const calendar = await this.calendarFor(userId);
-    if (row.googleEventId && calendar.deleteCosEvent) {
-      await calendar.deleteCosEvent(row.googleEventId);
+    const targets = opts?.seriesScope === 'THIS_AND_FUTURE' && row.repeatSeriesId
+      ? await this.listSeriesBlocksFrom(userId, row.repeatSeriesId, row.startEpochMs, id)
+      : [row];
+
+    for (const target of targets) {
+      const calendar = await this.calendarFor(userId);
+      if (target.googleEventId && calendar.deleteCosEvent) {
+        await calendar.deleteCosEvent(target.googleEventId);
+      }
+      await this.db
+        .update(timeBlocks)
+        .set({
+          deletedAt: new Date(),
+          syncStatus: 'SYNCED',
+          revision: target.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(timeBlocks.id, target.id), eq(timeBlocks.userId, userId)));
+      if (target.taskId) {
+        await this.syncTaskStatusFromSessions(userId, target.taskId);
+      }
     }
-    await this.db
-      .update(timeBlocks)
-      .set({
-        deletedAt: new Date(),
-        syncStatus: 'SYNCED',
-        revision: row.revision + 1,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)));
-    if (row.taskId) {
-      await this.syncTaskStatusFromSessions(userId, row.taskId);
-    }
-    return { id, deleted: true as const };
+    return { id, deleted: true as const, removedCount: targets.length };
   }
 
   /** Mark a Calendar Session done/incomplete. Never completes other series instances. */
@@ -765,6 +824,225 @@ export class PlannerV2Service {
       createdTaskIds,
       weeks: weekCount,
     };
+  }
+
+  /** Summarize a Task's repeat series for Edit Repeat UI. */
+  async getTaskRepeatSummary(userId: string, taskId: string) {
+    const task = await this.requireOwnedTask(userId, taskId);
+    if (!task.repeatSeriesId) return null;
+    const siblings = await this.db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.userId, userId),
+          eq(tasks.repeatSeriesId, task.repeatSeriesId),
+          isNull(tasks.deletedAt),
+        ),
+      );
+    const dues = siblings
+      .map((row) => row.deadlineEpochMs)
+      .filter((value): value is number => value != null)
+      .sort((a, b) => a - b);
+    const starts = dues.length ? dues[0]! : task.deadlineEpochMs;
+    const ends = dues.length ? dues[dues.length - 1]! : task.deadlineEpochMs;
+    const weekSpan = starts != null && ends != null
+      ? Math.max(1, Math.round((ends - starts) / (7 * 86_400_000)) + 1)
+      : siblings.length;
+    return {
+      seriesId: task.repeatSeriesId,
+      cadence: 'WEEKLY' as const,
+      instanceCount: siblings.length,
+      weekCount: weekSpan,
+      startsAt: starts != null ? new Date(starts).toISOString() : null,
+      endsAt: ends != null ? new Date(ends).toISOString() : null,
+    };
+  }
+
+  /**
+   * Edit Repeat: extend (materialize more weeks), shorten/stop (remove or detach future).
+   * Never deletes past instances or completed historical sessions.
+   */
+  async updateTaskRepeat(
+    userId: string,
+    taskId: string,
+    input: RepeatRangeInput & { stopAfterThis?: boolean },
+  ) {
+    const source = await this.requireOwnedTask(userId, taskId);
+    if (!source.repeatSeriesId) this.badRequest('Task is not part of a repeat series.');
+    const seriesId = source.repeatSeriesId;
+    const siblings = await this.db
+      .select()
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.userId, userId),
+          eq(tasks.repeatSeriesId, seriesId),
+          isNull(tasks.deletedAt),
+        ),
+      );
+    const sourceDue = source.deadlineEpochMs ?? 0;
+    const pastAndCurrent = siblings.filter((row) => (row.deadlineEpochMs ?? 0) <= sourceDue);
+    const future = siblings
+      .filter((row) => (row.deadlineEpochMs ?? 0) > sourceDue)
+      .sort((a, b) => (a.deadlineEpochMs ?? 0) - (b.deadlineEpochMs ?? 0));
+
+    if (input.stopAfterThis) {
+      const { removed, detached } = await this.retireFutureSeriesTasks(userId, future);
+      return {
+        seriesId,
+        action: 'STOP_AFTER_THIS' as const,
+        keptInstanceCount: pastAndCurrent.length,
+        removed,
+        detached,
+      };
+    }
+
+    const fromEpoch = source.deadlineEpochMs
+      ?? (await this.listActiveSessionsForTask(userId, taskId))[0]?.startEpochMs
+      ?? Date.now();
+    const desiredWeeks = resolveRepeatWeekCount({
+      weeks: input.weeks,
+      untilEpochMs: input.until ? new Date(input.until).getTime() : null,
+      fromEpochMs: fromEpoch,
+    });
+    // desiredWeeks = number of FUTURE weeks from source (same as repeatTask).
+    // Total span from series start = index of source among sorted + desiredWeeks.
+    const sorted = [...siblings].sort((a, b) => (a.deadlineEpochMs ?? 0) - (b.deadlineEpochMs ?? 0));
+    const sourceIndex = sorted.findIndex((row) => row.id === source.id);
+    const keepFutureCount = desiredWeeks;
+    const keepFuture = future.slice(0, keepFutureCount);
+    const dropFuture = future.slice(keepFutureCount);
+
+    const { removed, detached } = await this.retireFutureSeriesTasks(userId, dropFuture);
+
+    // Extend: materialize missing future weeks beyond keepFuture.
+    const existingFutureOffsets = new Set(
+      keepFuture.map((row) => {
+        if (source.deadlineEpochMs == null || row.deadlineEpochMs == null) return -1;
+        return Math.round((row.deadlineEpochMs - source.deadlineEpochMs) / (7 * 86_400_000));
+      }).filter((n) => n > 0),
+    );
+    const sessions = await this.listActiveSessionsForTask(userId, taskId);
+    const sessionSeriesById = new Map<string, string>();
+    for (const session of sessions) {
+      const sid = session.repeatSeriesId ?? randomUUID();
+      sessionSeriesById.set(session.id, sid);
+      if (!session.repeatSeriesId) {
+        await this.db
+          .update(timeBlocks)
+          .set({ repeatSeriesId: sid, revision: session.revision + 1, updatedAt: new Date() })
+          .where(and(eq(timeBlocks.id, session.id), eq(timeBlocks.userId, userId)));
+      }
+    }
+
+    const createdTaskIds: string[] = [];
+    for (const weekOffset of futureWeekOffsets(desiredWeeks)) {
+      if (existingFutureOffsets.has(weekOffset)) continue;
+      const newTaskId = randomUUID();
+      const dueAt = source.deadlineEpochMs != null
+        ? shiftEpochByWeeks(source.deadlineEpochMs, weekOffset)
+        : null;
+      await this.db.insert(tasks).values({
+        id: newTaskId,
+        userId,
+        title: source.title,
+        description: '',
+        projectId: source.projectId,
+        goalId: source.goalId,
+        goalProcessId: source.goalProcessId,
+        lifeArea: source.lifeArea,
+        priority: source.priority,
+        deadlineEpochMs: dueAt,
+        preferredTime: source.preferredTime,
+        estimatedMinutes: source.estimatedMinutes,
+        status: 'TODO',
+        completedAtEpochMs: null,
+        repeatSeriesId: seriesId,
+        revision: 1,
+        updatedAt: new Date(),
+        deletedAt: null,
+      });
+      createdTaskIds.push(newTaskId);
+      for (const session of sessions) {
+        const blockId = randomUUID();
+        await this.db.insert(timeBlocks).values({
+          id: blockId,
+          userId,
+          taskId: newTaskId,
+          projectId: session.projectId ?? source.projectId,
+          title: session.title,
+          startEpochMs: shiftEpochByWeeks(session.startEpochMs, weekOffset),
+          endEpochMs: shiftEpochByWeeks(session.endEpochMs, weekOffset),
+          color: session.color,
+          status: 'PLANNED',
+          notes: session.notes ?? '',
+          completedAtEpochMs: null,
+          reminderMinutes: session.reminderMinutes,
+          repeatSeriesId: sessionSeriesById.get(session.id) ?? null,
+          syncStatus: 'PENDING',
+          revision: 1,
+          updatedAt: new Date(),
+          deletedAt: null,
+        });
+        await this.syncBlock(userId, blockId);
+      }
+      if (sessions.length > 0) {
+        await this.syncTaskStatusFromSessions(userId, newTaskId);
+      }
+    }
+
+    return {
+      seriesId,
+      action: 'UPDATE' as const,
+      weekCount: desiredWeeks,
+      createdTaskIds,
+      removed,
+      detached,
+      sourceIndex,
+    };
+  }
+
+  private async retireFutureSeriesTasks(
+    userId: string,
+    future: Array<typeof tasks.$inferSelect>,
+  ) {
+    let removed = 0;
+    let detached = 0;
+    for (const task of future) {
+      const sessions = await this.listActiveSessionsForTask(userId, task.id);
+      const hasEvidence = sessions.some((session) =>
+        session.status === 'DONE' || Boolean(session.completedAtEpochMs),
+      );
+      const hasCarryNote = Boolean(task.carryOverNote?.trim());
+      if (hasEvidence || hasCarryNote) {
+        await this.db
+          .update(tasks)
+          .set({
+            repeatSeriesId: null,
+            revision: task.revision + 1,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+        for (const session of sessions) {
+          if (session.repeatSeriesId) {
+            await this.db
+              .update(timeBlocks)
+              .set({
+                repeatSeriesId: null,
+                revision: session.revision + 1,
+                updatedAt: new Date(),
+              })
+              .where(and(eq(timeBlocks.id, session.id), eq(timeBlocks.userId, userId)));
+          }
+        }
+        detached += 1;
+        continue;
+      }
+      await this.deleteTask(userId, task.id);
+      removed += 1;
+    }
+    return { removed, detached };
   }
 
   /**
