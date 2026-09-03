@@ -148,6 +148,39 @@ describe('DeepSeek provider error mapping', () => {
     expect(body?.response_format).toEqual({ type: 'json_object' });
     expect(body?.stream).toBe(false);
   });
+
+  it('sends deepseek-v4-flash without thinking to reduce token cost', async () => {
+    let body: Record<string, unknown> | null = null;
+    globalThis.fetch = vi.fn(async (_url, init) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                outcome: { statement: 'Offer received', confidence: 'HIGH' },
+                metrics: [],
+                milestones: [{ title: 'CV ready' }],
+                processes: [],
+                projects: [{ title: 'Job Applications' }],
+                nextActions: [],
+                assumptions: [],
+              }),
+            },
+          }],
+          usage: { prompt_tokens: 100, completion_tokens: 200, total_tokens: 300 },
+          model: 'deepseek-v4-flash',
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    const provider = new DeepSeekLlmProvider('k', 'deepseek-v4-flash');
+    await provider.structureGoal('Title: Get a Backend Developer Job');
+    expect(body?.model).toBe('deepseek-v4-flash');
+    expect(body?.thinking).toBeUndefined();
+    expect(body?.reasoning_effort).toBeUndefined();
+  });
 });
 
 describe('copy exporters regression', () => {

@@ -57,6 +57,18 @@ export const goalStructureSuggestionSchema = z.object({
     )
     .max(8)
     .default([]),
+  systems: z.array(z.object({
+    title: z.string().trim().min(1).max(240),
+    targetType: z.enum(['COUNT', 'DURATION']),
+    targetValue: z.number().nonnegative(),
+    unit: z.string().max(32).nullish(),
+    period: z.literal('WEEK'),
+    durationWeeks: z.number().int().positive().max(520),
+    startDate: z.string().max(32).nullish(),
+    preferredDays: z.array(z.number().int().min(0).max(6)).max(7).nullish(),
+    preferredTime: z.string().max(32).nullish(),
+    rationale: z.string().max(2_000).nullish(),
+  })).max(8).optional(),
   projects: z
     .array(
       z.object({
@@ -100,7 +112,7 @@ Task = concrete executable next action
 Rules:
 - Prefer few meaningful items: 3–7 milestones, 1–4 processes, 1–4 projects.
 - projects MUST be present as a JSON array with at least one Project.
-- Always include these array keys (use [] when no appropriate items): metrics, milestones, processes, nextActions, assumptions. projects must not be empty.
+- Always include these array keys (use [] when no appropriate items): metrics, milestones, processes, systems, nextActions, assumptions. projects must not be empty.
 - Distinguish Processes (repeatable) from Projects (finite).
 - Do not invent false precision. If a metric is unclear, set needsUserDecision=true and list possibleAlternatives with a recommended candidate in rationale.
 - Do not invent personal facts absent from USER AI CONTEXT.
@@ -143,6 +155,7 @@ JSON shape:
     "rationale": string|null,
     "confidence": "HIGH"|"MEDIUM"|"LOW"
   }],
+  "systems": [{ "title": string, "targetType": "COUNT"|"DURATION", "targetValue": number, "unit": string|null, "period": "WEEK", "durationWeeks": number, "startDate": string|null, "preferredDays": number[]|null, "preferredTime": string|null, "rationale": string|null }],
   "projects": [{
     "title": string,
     "purpose": string|null,

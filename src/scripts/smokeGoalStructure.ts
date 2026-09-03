@@ -23,7 +23,7 @@ async function main() {
     console.error('Set DEEPSEEK_API_KEY to run this smoke test.');
     process.exit(1);
   }
-  const model = process.env.DEEPSEEK_MODEL?.trim() || 'deepseek-v4-pro';
+  const model = process.env.DEEPSEEK_MODEL?.trim() || 'deepseek-v4-flash';
   const requestId = randomUUID();
   const provider = new DeepSeekLlmProvider(apiKey, model);
   const prompt = [

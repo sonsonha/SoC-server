@@ -299,11 +299,16 @@ export class GoalStructuringService {
       suggestion.timeProtectedMinutesPerWeek,
     );
     const systems = [
-      ...processes.map((p) => ({
-        id: randomUUID(),
-        title: p.name,
-        cadence: formatProcessCadence(p),
+      ...(suggestion.systems ?? []).map((s) => ({
+        id: randomUUID(), title: s.title, targetType: s.targetType,
+        targetValue: s.targetValue, unit: s.unit ?? null, period: 'WEEK',
+        durationWeeks: s.durationWeeks, startDate: s.startDate ?? null,
+        preferredDays: s.preferredDays ?? null, preferredTime: s.preferredTime ?? null,
+        status: 'ACTIVE',
       })),
+      ...(!(suggestion.systems ?? []).length ? processes.map((p) => ({
+        id: randomUUID(), title: p.name, cadence: formatProcessCadence(p),
+      })) : []),
       ...(timeProtected
         ? [{ id: randomUUID(), title: timeProtected.title, cadence: timeProtected.cadence }]
         : []),

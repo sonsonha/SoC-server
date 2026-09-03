@@ -208,6 +208,7 @@ export async function aiGoalRoutes(
           target: p.thisWeek.target,
           unit: p.unit,
         })),
+        systems: (goal.systems ?? []).map((s: { title: string; targetValue?: number; unit?: string | null; durationWeeks?: number; status?: string }) => s),
         projects: linkedProjects.map((p: { title: string; description?: string }) => ({
           title: p.title,
           purpose: p.description ?? null,

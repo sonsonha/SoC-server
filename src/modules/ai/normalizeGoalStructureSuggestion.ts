@@ -159,6 +159,24 @@ function normalizeProject(value: unknown): unknown {
   };
 }
 
+function normalizeSystem(value: unknown): unknown {
+  const obj = asRecord(value);
+  if (!obj) return value;
+  return {
+    ...obj,
+    title: emptyToUndefined(obj.title),
+    targetValue: coerceNumber(obj.targetValue),
+    targetType: typeof obj.targetType === 'string' ? obj.targetType.trim().toUpperCase() : obj.targetType,
+    period: normalizePeriod(obj.period ?? 'WEEK'),
+    durationWeeks: coerceNumber(obj.durationWeeks),
+    unit: emptyToUndefined(obj.unit) ?? null,
+    startDate: emptyToUndefined(obj.startDate) ?? null,
+    preferredDays: Array.isArray(obj.preferredDays) ? obj.preferredDays.map(coerceNumber) : null,
+    preferredTime: emptyToUndefined(obj.preferredTime) ?? null,
+    rationale: emptyToUndefined(obj.rationale) ?? null,
+  };
+}
+
 function normalizeNextAction(value: unknown): unknown {
   const obj = asRecord(value);
   if (!obj) return value;
@@ -187,6 +205,7 @@ export function normalizeGoalStructureSuggestion(raw: unknown): unknown {
     metrics: ensureArray(obj.metrics).map(normalizeMetric),
     milestones: ensureArray(obj.milestones).map(normalizeMilestone),
     processes: ensureArray(obj.processes).map(normalizeProcess),
+    systems: ensureArray(obj.systems).map(normalizeSystem),
     projects: Array.isArray(obj.projects) ? obj.projects.map(normalizeProject) : obj.projects,
     timeProtectedMinutesPerWeek: coerceNumber(
       emptyToUndefined(obj.timeProtectedMinutesPerWeek) ?? null,

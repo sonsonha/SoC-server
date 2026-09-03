@@ -37,12 +37,12 @@ const USER_UNAVAILABLE =
 /**
  * DeepSeek Platform via OpenAI-compatible Chat Completions.
  * Docs: https://api-docs.deepseek.com/ — base https://api.deepseek.com
- * Production Goal Structuring model: deepseek-v4-pro
+ * Default Goal Structuring model: deepseek-v4-flash (cheapest; override via DEEPSEEK_MODEL).
  */
 export class DeepSeekLlmProvider implements LlmProvider {
   constructor(
     private readonly apiKey: string,
-    private readonly model: string = 'deepseek-v4-pro',
+    private readonly model: string = 'deepseek-v4-flash',
     private readonly baseUrl: string = 'https://api.deepseek.com',
   ) {}
 
@@ -61,11 +61,12 @@ export class DeepSeekLlmProvider implements LlmProvider {
     return structureSchema.parse(raw);
   }
 
-  /** Goal structuring: thinking enabled, reasoning_effort high, JSON object only. */
+  /** Goal structuring: JSON object. Pro uses thinking; Flash skips it (cost). */
   async structureGoal(prompt: string): Promise<unknown> {
+    const useThinking = !this.model.toLowerCase().includes('flash');
     return this.generateJson(prompt, {
-      thinking: true,
-      reasoningEffort: 'high',
+      thinking: useThinking,
+      reasoningEffort: useThinking ? 'high' : undefined,
       maxTokens: 16_384,
       oneRetry: true,
     });

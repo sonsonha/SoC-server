@@ -56,6 +56,16 @@ export type GoalMilestone = {
 export type GoalSystem = {
   id: string;
   title: string;
+  targetType?: 'COUNT' | 'DURATION';
+  targetValue?: number;
+  unit?: string | null;
+  period?: 'WEEK';
+  durationWeeks?: number;
+  startDate?: string | null;
+  preferredDays?: number[] | null;
+  preferredTime?: string | null;
+  status?: 'ACTIVE' | 'PAUSED' | 'COMPLETED';
+  /** Legacy display-only cadence retained for backward compatibility. */
   cadence?: string;
 };
 
@@ -105,7 +115,19 @@ export function parseGoalMilestones(
 
 export function parseGoalSystems(raw: string | null | undefined): GoalSystem[] {
   const parsed = parseJsonValue<GoalSystem[] | null>(raw, []);
-  return Array.isArray(parsed) ? parsed : [];
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((value): value is GoalSystem => Boolean(value && typeof value === 'object'))
+    .map((value) => {
+      const system = value as GoalSystem;
+      return {
+        ...system,
+        id: typeof system.id === 'string' && system.id ? system.id : randomUUID(),
+        title: typeof system.title === 'string' ? system.title : 'Untitled system',
+        status: system.status === 'PAUSED' || system.status === 'COMPLETED' ? system.status : 'ACTIVE',
+        period: 'WEEK' as const,
+        preferredDays: Array.isArray(system.preferredDays) ? system.preferredDays : null,
+      };
+    });
 }
 
 export function parseGoalProcesses(raw: string | null | undefined): GoalProcess[] {

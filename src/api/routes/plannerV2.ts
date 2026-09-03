@@ -51,6 +51,15 @@ const milestoneSchema = z.object({
 const systemSchema = z.object({
   id: z.string().min(1),
   title: z.string().trim().min(1).max(240),
+  targetType: z.enum(['COUNT', 'DURATION']).optional(),
+  targetValue: z.number().nonnegative().optional(),
+  unit: z.string().max(32).nullable().optional(),
+  period: z.literal('WEEK').optional(),
+  durationWeeks: z.number().int().positive().max(520).optional(),
+  startDate: z.string().max(32).nullable().optional(),
+  preferredDays: z.array(z.number().int().min(0).max(6)).max(7).nullable().optional(),
+  preferredTime: z.string().max(32).nullable().optional(),
+  status: z.enum(['ACTIVE', 'PAUSED', 'COMPLETED']).optional(),
   cadence: z.string().max(120).optional(),
 });
 

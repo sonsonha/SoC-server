@@ -48,6 +48,13 @@ export function exportSuggestionMarkdown(opts: {
   lines.push('');
 
   lines.push('## Systems / Processes', '');
+  for (const system of (s.systems ?? [])) {
+    lines.push(`### ${system.title}`);
+    lines.push(`Target: ${system.targetValue}${system.unit ? ` ${system.unit}` : ''} / week`);
+    lines.push(`Duration: ${system.durationWeeks} weeks`);
+    if (system.rationale) lines.push(`Why: ${system.rationale}`);
+    lines.push('');
+  }
   for (const p of s.processes) {
     lines.push(`### ${p.name}`);
     lines.push(`${p.targetValue}${p.unit ? ` ${p.unit}` : ''} / week (${p.metricType})`);
@@ -122,6 +129,7 @@ export type GoalContextExportInput = {
     target: number;
     unit?: string;
   }>;
+  systems?: Array<{ title: string; targetValue?: number; unit?: string | null; durationWeeks?: number; status?: string }>;
   projects: Array<{
     title: string;
     purpose?: string | null;
@@ -177,6 +185,13 @@ export function exportGoalFullContextMarkdown(input: GoalContextExportInput): st
   lines.push('');
 
   lines.push('## Systems / Processes', '');
+  for (const s of (input.systems ?? [])) {
+    lines.push(`### ${s.title}`);
+    lines.push(`Target: ${s.targetValue ?? '—'}${s.unit ? ` ${s.unit}` : ''} / week`);
+    if (s.durationWeeks) lines.push(`Duration: ${s.durationWeeks} weeks`);
+    if (s.status) lines.push(`Status: ${s.status}`);
+    lines.push('');
+  }
   for (const p of input.processes) {
     lines.push(`### ${p.name}`);
     lines.push(`Completed: ${p.completed ?? '—'}`);

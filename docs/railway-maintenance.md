@@ -26,7 +26,7 @@ Set these on **Railway only** (never Vercel `NEXT_PUBLIC_*`):
 |----------|--------|
 | `LLM_PROVIDER` | `deepseek` |
 | `DEEPSEEK_API_KEY` | from platform.deepseek.com |
-| `DEEPSEEK_MODEL` | `deepseek-v4-pro` |
+| `DEEPSEEK_MODEL` | `deepseek-v4-flash` |
 
 Vercel only proxies `/api/ai/*` to Railway and does **not** need the DeepSeek key.
 

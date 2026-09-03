@@ -15,11 +15,12 @@ Fastify + Drizzle + PostgreSQL modular monolith. Phase 00 delivers **device auth
 | Mode | Env |
 |------|-----|
 | Fake (default) | `USE_FAKE_PROVIDERS=true` and `LLM_PROVIDER=auto` |
-| **DeepSeek (production Goal Structuring)** | `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` + `DEEPSEEK_MODEL=deepseek-v4-pro` |
+| **DeepSeek (production Goal Structuring)** | `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` + `DEEPSEEK_MODEL=deepseek-v4-flash` |
 | Gemini | `LLM_PROVIDER=gemini` + `GEMINI_API_KEY`, or `USE_FAKE_PROVIDERS=false` + key with `LLM_PROVIDER=auto` |
 
 - Base URL: `https://api.deepseek.com` (Chat Completions)
-- Default model: **`deepseek-v4-pro`** (do not assume legacy `deepseek-chat` / `deepseek-reasoner`)
+- Default model: **`deepseek-v4-flash`** (cheapest; ~3× lower than `deepseek-v4-pro` off-peak)
+- Set `DEEPSEEK_MODEL=deepseek-v4-pro` if you need Pro + thinking for harder goals
 - `DEEPSEEK_API_KEY` is **Railway/backend only** — never put it in Vercel `NEXT_PUBLIC_*`
 - Tip: `USE_FAKE_PROVIDERS=true` + `LLM_PROVIDER=deepseek` uses live DeepSeek while maps/search stay fake
 
@@ -107,7 +108,7 @@ curl -s http://localhost:3000/v1/ping \
 | `WORKER_ENABLED` | no | Phase 00: leave `false` (no jobs) |
 | `LLM_PROVIDER` | no | `auto` \| `fake` \| `gemini` \| `deepseek` — production Goal Structuring: `deepseek` |
 | `DEEPSEEK_API_KEY` | prod AI | Backend/Railway secret only (never Vercel public) |
-| `DEEPSEEK_MODEL` | no | Default `deepseek-v4-pro` |
+| `DEEPSEEK_MODEL` | no | Default `deepseek-v4-flash` |
 
 ## Android connectivity
 
@@ -124,7 +125,7 @@ curl -s http://localhost:3000/v1/ping \
 4. For AI Goal Structuring set (backend only):
    - `LLM_PROVIDER=deepseek`
    - `DEEPSEEK_API_KEY=<secret>`
-   - `DEEPSEEK_MODEL=deepseek-v4-pro`
+   - `DEEPSEEK_MODEL=deepseek-v4-flash`
 5. Release command runs migrations (`railway.toml`) — includes `0023_ai_user_context`.
 6. Optionally: `npm run ai:verify-schema` in Railway console after deploy.
 7. Health check: `GET /health`.
