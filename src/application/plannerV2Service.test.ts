@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   normalizeMilestoneStatus,
+  parseGoalSystems,
   priorityFromDb,
   priorityToDb,
   reconcileMilestones,
@@ -45,5 +46,14 @@ describe('Planner V2 mappings', () => {
       'm3',
     );
     expect(reconciled.map((item) => item.status)).toEqual(['done', 'done', 'current', 'pending']);
+  });
+
+  it('loads legacy and structured Goal systems without destructive rewriting', () => {
+    const systems = parseGoalSystems(JSON.stringify([
+      { id: 'legacy', title: 'Reading', cadence: '3h / week' },
+      { id: 'structured', title: 'English Study', targetType: 'COUNT', targetValue: 5, unit: 'sessions', period: 'WEEK', durationWeeks: 8, preferredDays: null, status: 'PAUSED' },
+    ]));
+    expect(systems[0]).toMatchObject({ id: 'legacy', title: 'Reading', cadence: '3h / week', status: 'ACTIVE' });
+    expect(systems[1]).toMatchObject({ id: 'structured', targetValue: 5, durationWeeks: 8, preferredDays: null, status: 'PAUSED' });
   });
 });

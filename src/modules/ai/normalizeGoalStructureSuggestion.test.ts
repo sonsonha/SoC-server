@@ -21,6 +21,13 @@ function baseValid() {
 }
 
 describe('normalizeGoalStructureSuggestion', () => {
+  it('accepts zero Systems for goals that only need finite Projects', () => {
+    const parsed = goalStructureSuggestionSchema.parse(normalizeGoalStructureSuggestion({
+      projects: [{ title: 'Submit application' }],
+      systems: [],
+    }));
+    expect(parsed.systems).toEqual([]);
+  });
   it('normalizes lowercase enums, weekly period, and numeric strings', () => {
     const raw = {
       outcome: { statement: 'Get hired', confidence: 'high' },
