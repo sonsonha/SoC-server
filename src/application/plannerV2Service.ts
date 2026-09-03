@@ -490,33 +490,56 @@ export class PlannerV2Service {
     return rows.map((row) => this.serializeBlock(row));
   }
 
-  async deleteTask(userId: string, id: string) {
+  async deleteTask(
+    userId: string,
+    id: string,
+    opts?: { seriesScope?: SeriesEditScope },
+  ) {
     const row = await this.requireOwnedTask(userId, id);
-    const linkedBlocks = await this.db
-      .select({ id: timeBlocks.id })
-      .from(timeBlocks)
-      .where(
-        and(
-          eq(timeBlocks.userId, userId),
-          eq(timeBlocks.taskId, id),
-          isNull(timeBlocks.deletedAt),
-        ),
-      );
+    const targets = opts?.seriesScope === 'THIS_AND_FUTURE' && row.repeatSeriesId
+      ? await this.listSeriesTasksFrom(
+        userId,
+        row.repeatSeriesId,
+        row.deadlineEpochMs ?? 0,
+        id,
+      )
+      : [row];
 
-    for (const block of linkedBlocks) {
-      await this.deleteTimeBlock(userId, block.id);
+    let removedTimeBlocks = 0;
+    for (const target of targets) {
+      const linkedBlocks = await this.db
+        .select({ id: timeBlocks.id })
+        .from(timeBlocks)
+        .where(
+          and(
+            eq(timeBlocks.userId, userId),
+            eq(timeBlocks.taskId, target.id),
+            isNull(timeBlocks.deletedAt),
+          ),
+        );
+
+      for (const block of linkedBlocks) {
+        // Instance-only session soft-delete (do not cascade session series here).
+        await this.deleteTimeBlock(userId, block.id);
+        removedTimeBlocks += 1;
+      }
+
+      await this.db
+        .update(tasks)
+        .set({
+          status: 'CANCELLED',
+          deletedAt: new Date(),
+          revision: target.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, target.id), eq(tasks.userId, userId)));
     }
-
-    await this.db
-      .update(tasks)
-      .set({
-        status: 'CANCELLED',
-        deletedAt: new Date(),
-        revision: row.revision + 1,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(tasks.id, id), eq(tasks.userId, userId)));
-    return { id, deleted: true as const, removedTimeBlocks: linkedBlocks.length };
+    return {
+      id,
+      deleted: true as const,
+      removedTimeBlocks,
+      removedTaskCount: targets.length,
+    };
   }
 
   async createTimeBlock(userId: string, input: CreateTimeBlockInput) {

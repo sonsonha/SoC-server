@@ -238,7 +238,12 @@ export async function plannerV2Routes(
   app.delete('/v2/tasks/:id', { preHandler: auth }, async (request, reply) => {
     const userId = requireUserId(request);
     const params = z.object({ id: z.string().min(1) }).parse(request.params);
-    return reply.send(await deps.planner.deleteTask(userId, params.id));
+    const query = z.object({
+      seriesScope: seriesScopeSchema.optional(),
+    }).parse(request.query ?? {});
+    return reply.send(await deps.planner.deleteTask(userId, params.id, {
+      seriesScope: query.seriesScope,
+    }));
   });
 
   app.post('/v2/time-blocks', { preHandler: auth }, async (request, reply) => {

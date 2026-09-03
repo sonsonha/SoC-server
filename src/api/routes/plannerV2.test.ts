@@ -82,7 +82,29 @@ describe('Planner V2 task management routes', () => {
       deleted: true,
       removedTimeBlocks: 2,
     });
-    expect(deleteTask).toHaveBeenCalledWith('user-a', 'task-1');
+    expect(deleteTask).toHaveBeenCalledWith('user-a', 'task-1', { seriesScope: undefined });
+    await app.close();
+  });
+
+  it('deletes a repeated task with series scope', async () => {
+    const deleteTask = vi.fn().mockResolvedValue({
+      id: 'task-3',
+      deleted: true,
+      removedTimeBlocks: 1,
+      removedTaskCount: 3,
+    });
+    const app = await plannerApp({ deleteTask });
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/v2/tasks/task-3?seriesScope=THIS_AND_FUTURE',
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(deleteTask).toHaveBeenCalledWith('user-a', 'task-3', {
+      seriesScope: 'THIS_AND_FUTURE',
+    });
     await app.close();
   });
 });
