@@ -16,14 +16,16 @@ import {
   goalStructureSuggestionSchema,
   type GoalStructureSuggestion,
 } from './goalStructureSchema.js';
-import { INITIAL_OWNER_AI_CONTEXT_DEFAULT } from './ownerAiContextDefault.js';
+import {
+  MAX_AI_CONTEXT_CHARS,
+  resolveUserAiContext,
+} from './userAiContext.js';
 import { timeProtectedMinutesToSystemCadence } from './timeProtectedAdapter.js';
 import { normalizeGoalStructureSuggestion } from './normalizeGoalStructureSuggestion.js';
 import { formatZodIssuesSafe, safeTopLevelKeys } from './goalStructureValidation.js';
 
 const MAX_TITLE = 240;
 const MAX_WHY = 4_000;
-const MAX_AI_CONTEXT = 12_000;
 const MAX_PROMPT_CHARS = 24_000;
 const RATE_LIMIT_MS = 15_000;
 /** Thinking + JSON for deepseek-v4-pro often needs >90s in production. */
@@ -74,18 +76,15 @@ export class GoalStructuringService {
       throw aiError('User not found', 404, 'NOT_FOUND');
     }
     const stored = await this.identity.getAiContext(userId);
-    if (stored != null && stored.trim()) {
-      return { aiContext: stored.slice(0, MAX_AI_CONTEXT), isDefaultSeed: false };
-    }
-    // Owner seed only — never inherit for other users.
-    if (this.identity.isLegacyCalendarOwner(user.email)) {
-      return { aiContext: INITIAL_OWNER_AI_CONTEXT_DEFAULT, isDefaultSeed: true };
-    }
-    return { aiContext: '', isDefaultSeed: false };
+    return resolveUserAiContext({
+      userEmail: user.email,
+      savedContext: stored,
+      initialOwnerEmail: this.identity.getInitialOwnerEmail?.(),
+    });
   }
 
   async setAiContext(userId: string, aiContext: string): Promise<{ aiContext: string }> {
-    const trimmed = aiContext.slice(0, MAX_AI_CONTEXT);
+    const trimmed = aiContext.slice(0, MAX_AI_CONTEXT_CHARS);
     await this.identity.setAiContext(userId, trimmed);
     return { aiContext: trimmed };
   }
@@ -95,12 +94,13 @@ export class GoalStructuringService {
     if (!user) {
       throw aiError('User not found', 404, 'NOT_FOUND');
     }
-    if (this.identity.isLegacyCalendarOwner(user.email)) {
-      await this.identity.setAiContext(userId, INITIAL_OWNER_AI_CONTEXT_DEFAULT);
-      return { aiContext: INITIAL_OWNER_AI_CONTEXT_DEFAULT };
-    }
-    await this.identity.setAiContext(userId, '');
-    return { aiContext: '' };
+    const reset = resolveUserAiContext({
+      userEmail: user.email,
+      savedContext: null,
+      initialOwnerEmail: this.identity.getInitialOwnerEmail?.(),
+    });
+    await this.identity.setAiContext(userId, reset.aiContext);
+    return { aiContext: reset.aiContext };
   }
 
   async buildPlannerSnapshot(userId: string): Promise<PlannerAiSnapshot> {
@@ -198,7 +198,7 @@ export class GoalStructuringService {
       description: input.description?.slice(0, MAX_WHY),
       why: input.why?.slice(0, MAX_WHY),
       targetDate: input.targetDate ?? null,
-      aiContext: aiContext.slice(0, MAX_AI_CONTEXT),
+      aiContext: aiContext.slice(0, MAX_AI_CONTEXT_CHARS),
       snapshot,
     }).slice(0, MAX_PROMPT_CHARS);
 
@@ -466,6 +466,11 @@ export class GoalStructuringService {
       '',
       'USER AI CONTEXT',
       opts.aiContext.trim() || '(none provided)',
+      '',
+      'USER CONTEXT RELEVANCE RULE',
+      'Treat User AI Context as background, not as a requirement that every Goal reference every area.',
+      'Use only the parts relevant to this Goal. Do not force unrelated education, career, project,',
+      'technology, or personal-interest details into the proposed structure.',
       '',
       'CURRENT PLANNER CONTEXT',
       plannerLines,
