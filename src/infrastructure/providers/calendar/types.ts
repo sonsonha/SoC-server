@@ -7,6 +7,11 @@ export type CalendarEvent = {
   calendarId?: string;
   /** True when Google used date-only start/end (all-day). */
   allDay?: boolean;
+  /**
+   * Google Calendar event colorId ("1"–"11"). Approximate Personal OS priority colors.
+   * @see googleCalendarColors.ts
+   */
+  colorId?: string;
   /** Private metadata written only on planner-owned event copies. */
   appMetadata?: Record<string, string>;
 };

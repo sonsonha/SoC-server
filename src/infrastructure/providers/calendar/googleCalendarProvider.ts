@@ -342,6 +342,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
         timeZone: PLANNER_TZ,
       },
       location: event.location ?? undefined,
+      ...(event.colorId ? { colorId: event.colorId } : {}),
       extendedProperties: event.appMetadata
         ? { private: event.appMetadata }
         : undefined,

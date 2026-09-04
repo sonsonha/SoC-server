@@ -10,6 +10,7 @@ import {
 } from '../infrastructure/db/schema/index.js';
 import type { CalendarProvider } from '../infrastructure/providers/calendar/types.js';
 import { isGoogleCalendarError } from '../infrastructure/providers/calendar/googleErrors.js';
+import { resolveGoogleEventColorId } from '../infrastructure/providers/calendar/googleCalendarColors.js';
 import {
   buildGoalProgress,
   type GoalMetricObservation,
@@ -49,6 +50,15 @@ export function priorityFromDb(priority: number): PlannerPriority {
   if (priority === 3) return 'P3';
   if (priority >= 4) return 'P4';
   return 'P2';
+}
+
+/** Stable hex used for UI + Google color approximation (matches web PRIORITY_LEVELS). */
+export function priorityToHex(priority: PlannerPriorityInput): string {
+  const normalized = priorityFromDb(priorityToDb(priority));
+  if (normalized === 'P1') return '#dc2626';
+  if (normalized === 'P3') return '#16a34a';
+  if (normalized === 'P4') return '#ca8a04';
+  return '#2563eb';
 }
 
 export function dueHorizonFromDb(value: string | null): 'DAY' | 'WEEK' | 'MONTH' | null {
@@ -468,6 +478,34 @@ export class PlannerV2Service {
           updatedAt: new Date(),
         })
         .where(and(eq(tasks.id, target.id), eq(tasks.userId, userId)));
+    }
+
+    // Keep linked Sessions' Google colors in sync when priority changes.
+    if (input.priority && nextPriority !== row.priority) {
+      const color = priorityToHex(input.priority);
+      for (const target of targets) {
+        const linked = await this.db
+          .select({ id: timeBlocks.id })
+          .from(timeBlocks)
+          .where(
+            and(
+              eq(timeBlocks.userId, userId),
+              eq(timeBlocks.taskId, target.id),
+              isNull(timeBlocks.deletedAt),
+            ),
+          );
+        for (const block of linked) {
+          await this.db
+            .update(timeBlocks)
+            .set({
+              color,
+              syncStatus: 'PENDING',
+              updatedAt: new Date(),
+            })
+            .where(and(eq(timeBlocks.id, block.id), eq(timeBlocks.userId, userId)));
+          await this.syncBlock(userId, block.id);
+        }
+      }
     }
 
     const updated = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
@@ -1549,17 +1587,32 @@ export class PlannerV2Service {
     const calendar = await this.calendarFor(userId);
     if (!calendar.upsertCosEvent) return this.serializeBlock(row);
     try {
+      let priority: number | null = null;
+      if (row.taskId) {
+        const taskRows = await this.db
+          .select({ priority: tasks.priority })
+          .from(tasks)
+          .where(and(eq(tasks.id, row.taskId), eq(tasks.userId, userId)))
+          .limit(1);
+        priority = taskRows[0]?.priority ?? null;
+      }
+      const colorId = resolveGoogleEventColorId({
+        priority: priority ?? undefined,
+        color: row.color,
+      });
       const googleEventId = await calendar.upsertCosEvent({
         eventId: row.googleEventId ?? undefined,
         title: row.title,
         startEpochMs: row.startEpochMs,
         endEpochMs: row.endEpochMs,
         calendarId: row.calendarId ?? undefined,
+        colorId,
         appMetadata: {
           plannerOrigin: 'personal-os',
           timeBlockId: row.id,
           ...(row.taskId ? { taskId: row.taskId } : {}),
           revision: String(row.revision),
+          colorId,
         },
       });
       await this.db

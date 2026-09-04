@@ -81,6 +81,7 @@ describe('GoogleCalendarProvider', () => {
       title: 'Focus',
       startEpochMs: Date.parse('2026-08-23T02:00:00.000Z'),
       endEpochMs: Date.parse('2026-08-23T03:00:00.000Z'),
+      colorId: '11',
       appMetadata: { plannerOrigin: 'personal-os', timeBlockId: 'block-1' },
     });
     expect(id).toBe('evt-created');
@@ -91,6 +92,7 @@ describe('GoogleCalendarProvider', () => {
     const body = JSON.parse(String(createCall![1]?.body));
     expect(body.start.timeZone).toBe('Asia/Ho_Chi_Minh');
     expect(body.end.timeZone).toBe('Asia/Ho_Chi_Minh');
+    expect(body.colorId).toBe('11');
   });
 
   it('updates an existing Google event', async () => {
