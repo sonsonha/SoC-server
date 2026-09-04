@@ -107,26 +107,40 @@ Personal OS semantics — never collapse these concepts:
 Goal = outcome to make true (desired end state)
 Metric = how that outcome is measured (may need clarification)
 Milestone = meaningful checkpoint / state transition toward the outcome
-Process = repeated measurable weekly behavior (measurement / cadence tracking)
-Project = body of work that advances the Goal
-  - STANDARD = finite body of work with a clear completion
-  - HABIT = repeated/ongoing behavior modeled as a Project with projectType HABIT
+Process = repeated measurable weekly behavior (measurement / cadence tracking only — not a work container)
+Project = body of work / activity container that advances the Goal. Every Project has a Type tag:
+  - STANDARD ("Project") = finite body of work with a clear completion / deliverable
+      Examples: "Ship MVP", "Job applications pipeline", "IELTS Writing Improvement"
+  - HABIT = same Project model, tagged for repeated / ongoing behavior
+      Examples: "Daily writing practice", "Morning run", "Weekly review ritual"
+      Habit is NOT a separate entity or System. Creating a Habit Project creates 0 Tasks —
+      cadence / frequency belongs later to Task/Session Repeat, not to this structure step.
 Task = concrete executable next action
+
+Project Type rules (required on every projects[] item via projectType):
+- Always set projectType to STANDARD or HABIT — do not omit it.
+- Use STANDARD when the work has an end state, milestone deliverable, or finite scope.
+- Use HABIT when the Goal needs an ongoing repeated behavior as a work container (not just a weekly Process metric).
+- Process ≠ Habit: Process measures weekly cadence; Habit Project is the container users organize Tasks under.
+- Do not force a Habit into every Goal. Many Goals only need STANDARD Projects.
+- Prefer at most 0–2 Habit Projects per Goal unless the outcome clearly depends on several ongoing behaviors.
+- Do not invent a separate "systems" concept — systems are retired; use HABIT Projects instead when needed.
 
 Rules:
 - Prefer few meaningful items: 3–7 milestones, 1–4 processes, 1–4 projects.
 - projects MUST be present as a JSON array with at least one Project.
 - Always include these array keys (use [] when no appropriate items): metrics, milestones, processes, nextActions, assumptions. projects must not be empty.
-- Distinguish Processes (measurement) from Projects (work containers). Use projectType HABIT only when the Goal needs a repeated/ongoing behavior as a Habit Project — do not force a Habit into every Goal.
+- Distinguish Processes (measurement) from Projects (work containers, STANDARD or HABIT).
 - Do not invent false precision. If a metric is unclear, set needsUserDecision=true and list possibleAlternatives with a recommended candidate in rationale.
 - Do not invent personal facts absent from USER AI CONTEXT.
-- Avoid duplicate Projects already listed in CURRENT PLANNER CONTEXT.
+- Avoid duplicate Projects already listed in CURRENT PLANNER CONTEXT (match title + type).
 - Respect existing weekly workload — do not pile on many new Processes or Habit Projects.
 - Avoid generic motivational advice and overplanning.
 - Process metricType is COUNT or DURATION only; period is always WEEK.
 - For DURATION processes, targetValue is minutes (e.g. 3h → 180, unit "min").
 - suggestedDefaultProcessName must exactly match a process name in THIS suggestion when linking.
 - Surface uncertainty via assumptions and questionsForUser.
+- In rationale for each Project, briefly justify why STANDARD vs HABIT.
 
 Exact allowed enum values:
 - confidence: HIGH | MEDIUM | LOW

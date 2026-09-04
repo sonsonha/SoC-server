@@ -42,6 +42,7 @@ export type PlannerAiSnapshot = {
     title: string;
     goalTitle: string | null;
     defaultProcessName: string | null;
+    projectType: 'STANDARD' | 'HABIT';
   }>;
   processes: Array<{ name: string; targetValue: number; period: string; unit?: string }>;
 };
@@ -140,6 +141,7 @@ export class GoalStructuringService {
         defaultProcessName: p.defaultGoalProcessId
           ? (processNameById.get(p.defaultGoalProcessId) ?? null)
           : null,
+        projectType: p.projectType === 'HABIT' ? ('HABIT' as const) : ('STANDARD' as const),
       }));
 
     const processMap = new Map<string, PlannerAiSnapshot['processes'][number]>();
@@ -435,9 +437,10 @@ export class GoalStructuringService {
       'ACTIVE PROJECTS',
       ...(opts.snapshot.activeProjects.length
         ? opts.snapshot.activeProjects.map((p) => {
+            const type = p.projectType === 'HABIT' ? 'Habit' : 'Project';
             const goal = p.goalTitle ? ` (Goal: ${p.goalTitle})` : '';
             const proc = p.defaultProcessName ? `; process: ${p.defaultProcessName}` : '';
-            return `- ${p.title}${goal}${proc}`;
+            return `- [${type}] ${p.title}${goal}${proc}`;
           })
         : ['(none)']),
       '',
