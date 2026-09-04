@@ -57,7 +57,10 @@ const GOOGLE_OPENID_SCOPE = 'openid';
 const GOOGLE_EMAIL_SCOPE = 'email';
 const GOOGLE_CALENDAR_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 const GOOGLE_CALENDAR_MANAGE_SCOPE = 'https://www.googleapis.com/auth/calendar.calendars';
-const GOOGLE_CALENDAR_LIST_SCOPE =
+/** Write access needed to set calendarList backgroundColor (sidebar color). */
+const GOOGLE_CALENDAR_LIST_SCOPE = 'https://www.googleapis.com/auth/calendar.calendarlist';
+/** Legacy connect used readonly — still accept so existing tokens keep syncing events. */
+const GOOGLE_CALENDAR_LIST_READONLY_SCOPE =
   'https://www.googleapis.com/auth/calendar.calendarlist.readonly';
 
 export function googleAuthUrl(
@@ -98,7 +101,14 @@ export const REQUIRED_GOOGLE_CALENDAR_SCOPES = [
 export function googleScopesSatisfied(grantedRaw: string | null | undefined): boolean {
   if (!grantedRaw?.trim()) return false;
   const granted = new Set(grantedRaw.split(/\s+/).filter(Boolean));
-  return REQUIRED_GOOGLE_CALENDAR_SCOPES.every((scope) => granted.has(scope));
+  const hasList =
+    granted.has(GOOGLE_CALENDAR_LIST_SCOPE)
+    || granted.has(GOOGLE_CALENDAR_LIST_READONLY_SCOPE);
+  return (
+    granted.has(GOOGLE_CALENDAR_EVENTS_SCOPE)
+    && granted.has(GOOGLE_CALENDAR_MANAGE_SCOPE)
+    && hasList
+  );
 }
 
 /** HMAC state helpers — kept for backward-compat unit tests; V2 uses OAuthConnectionStateService. */

@@ -1580,7 +1580,63 @@ export class PlannerV2Service {
       if (result.syncStatus === 'SYNCED') synced += 1;
       else failed += 1;
     }
+
+    // Drop leftover Personal OS Google events (e.g. old purple copies) that no
+    // longer match a live time block's googleEventId after recreate.
+    await this.purgeOrphanCosEvents(userId, fromEpochMs, toEpochMs);
+
     return { attempted: rows.length, synced, failed };
+  }
+
+  private async purgeOrphanCosEvents(
+    userId: string,
+    fromEpochMs: number,
+    toEpochMs: number,
+  ): Promise<void> {
+    const calendar = await this.calendarFor(userId);
+    if (!calendar.listCosEvents || !calendar.deleteCosEvent) return;
+
+    const owned = await this.db
+      .select({ googleEventId: timeBlocks.googleEventId })
+      .from(timeBlocks)
+      .where(
+        and(
+          eq(timeBlocks.userId, userId),
+          isNull(timeBlocks.deletedAt),
+        ),
+      );
+    const keep = new Set(
+      owned.map((row) => row.googleEventId).filter((id): id is string => Boolean(id)),
+    );
+
+    let events: Awaited<ReturnType<NonNullable<typeof calendar.listCosEvents>>>;
+    try {
+      events = await calendar.listCosEvents(fromEpochMs, toEpochMs);
+    } catch (err) {
+      console.warn('planner.purgeOrphanCosEvents list failed', {
+        message: err instanceof Error ? err.message : 'unknown',
+      });
+      return;
+    }
+
+    let removed = 0;
+    for (const event of events) {
+      const origin = event.appMetadata?.plannerOrigin;
+      if (origin !== 'personal-os' && origin !== 'cos') continue;
+      if (!event.eventId || keep.has(event.eventId)) continue;
+      try {
+        await calendar.deleteCosEvent(event.eventId);
+        removed += 1;
+      } catch (err) {
+        console.warn('planner.purgeOrphanCosEvents delete failed', {
+          eventId: event.eventId,
+          message: err instanceof Error ? err.message : 'unknown',
+        });
+      }
+    }
+    if (removed > 0) {
+      console.info('planner.purgeOrphanCosEvents', { userId, removed });
+    }
   }
 
   private async syncBlock(userId: string, id: string) {

@@ -43,7 +43,7 @@ const EXPECTED_SCOPES = [
   'openid',
   'email',
   'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+  'https://www.googleapis.com/auth/calendar.calendarlist',
   'https://www.googleapis.com/auth/calendar.calendars',
 ];
 
@@ -79,6 +79,19 @@ describe('googleScopesSatisfied', () => {
           'openid',
           'email',
           'https://www.googleapis.com/auth/calendar.events',
+          'https://www.googleapis.com/auth/calendar.calendarlist',
+          'https://www.googleapis.com/auth/calendar.calendars',
+        ].join(' '),
+      ),
+    ).toBe(true);
+  });
+
+  it('still accepts legacy calendarlist.readonly tokens', async () => {
+    const { googleScopesSatisfied } = await import('./integrations.js');
+    expect(
+      googleScopesSatisfied(
+        [
+          'https://www.googleapis.com/auth/calendar.events',
           'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
           'https://www.googleapis.com/auth/calendar.calendars',
         ].join(' '),
@@ -101,7 +114,7 @@ describe('googleScopesSatisfied', () => {
       googleScopesSatisfied(
         [
           'https://www.googleapis.com/auth/calendar.events',
-          'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+          'https://www.googleapis.com/auth/calendar.calendarlist',
           'https://www.googleapis.com/auth/calendar.calendars',
         ].join(' '),
       ),

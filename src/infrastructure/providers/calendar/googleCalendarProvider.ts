@@ -361,17 +361,19 @@ export class GoogleCalendarProvider implements CalendarProvider {
 
   /** Keep Personal OS calendar selected + dark green in Google's sidebar. */
   private async ensureWriteCalendarAppearance(accessToken: string, calendarId: string): Promise<void> {
-    const res = await fetch(
-      `https://www.googleapis.com/calendar/v3/users/me/calendarList/${encodeURIComponent(calendarId)}`,
-      {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(POS_CALENDAR_APPEARANCE),
+    // colorRgbFormat=true is required for backgroundColor/foregroundColor to stick.
+    // Needs calendar.calendarlist (write) — readonly scope returns 403.
+    const url =
+      `https://www.googleapis.com/calendar/v3/users/me/calendarList/${encodeURIComponent(calendarId)}`
+      + '?colorRgbFormat=true';
+    const res = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
       },
-    );
+      body: JSON.stringify(POS_CALENDAR_APPEARANCE),
+    });
     if (!res.ok) {
       const detail = await res.text();
       console.warn('google.cosCalendar appearance patch failed', {
@@ -451,17 +453,19 @@ export class GoogleCalendarProvider implements CalendarProvider {
       const existingId = event.eventId?.startsWith('cos-') ? undefined : event.eventId;
       const createUrl =
         `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`;
-      const url = existingId
-        ? `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(existingId)}`
-        : createUrl;
-      let res = await fetch(url, {
-        method: existingId ? 'PATCH' : 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
+      const eventUrl = (id: string) =>
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(id)}`;
+      const write = async (method: 'POST' | 'PATCH', url: string) =>
+        fetch(url, {
+          method,
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        });
+
+      let res = await write(existingId ? 'PATCH' : 'POST', existingId ? eventUrl(existingId) : createUrl);
       // A user may delete an app-owned event directly in Google. If they then
       // move the still-local block before pulling, recreate it instead of
       // leaving the block permanently FAILED.
@@ -471,14 +475,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
           hasGoogleEventId: true,
           googleStatus: res.status,
         });
-        res = await fetch(createUrl, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-        });
+        res = await write('POST', createUrl);
       }
       if (!res.ok) {
         const detail = await res.text();
@@ -492,13 +489,56 @@ export class GoogleCalendarProvider implements CalendarProvider {
         console.error('google.upsertCosEvent failed', err.toLogFields());
         throw err;
       }
-      const data = (await res.json()) as { id?: string };
-      const id = data.id ?? existingId ?? `cos-${event.startEpochMs}`;
+      let data = (await res.json()) as { id?: string; colorId?: string };
+      let id = data.id ?? existingId ?? `cos-${event.startEpochMs}`;
+
+      // PATCH sometimes echoes ok without persisting colorId (or leaves an old
+      // palette id). Confirm, then color-only PATCH, then delete+recreate.
+      if (event.colorId && String(data.colorId ?? '') !== String(event.colorId)) {
+        console.warn('google.upsertCosEvent colorId mismatch — forcing', {
+          timeBlockId: timeBlockId ?? null,
+          id,
+          requested: event.colorId,
+          returned: data.colorId ?? null,
+        });
+        const colorRes = await fetch(eventUrl(id), {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ colorId: event.colorId }),
+        });
+        if (colorRes.ok) {
+          data = (await colorRes.json()) as { id?: string; colorId?: string };
+        }
+        if (String(data.colorId ?? '') !== String(event.colorId)) {
+          await fetch(eventUrl(id), {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }).catch(() => undefined);
+          const recreate = await write('POST', createUrl);
+          if (!recreate.ok) {
+            const detail = await recreate.text();
+            throw googleErrorFromHttp({
+              operation: 'upsertCosEvent.recreate',
+              googleStatus: recreate.status,
+              detail,
+              timeBlockId,
+              hasGoogleEventId,
+            });
+          }
+          data = (await recreate.json()) as { id?: string; colorId?: string };
+          id = data.id ?? `cos-${event.startEpochMs}`;
+        }
+      }
+
       console.info('google.upsertCosEvent ok', {
         id,
         timeBlockId: timeBlockId ?? null,
         hasGoogleEventId,
-        colorId: event.colorId ?? null,
+        requestedColorId: event.colorId ?? null,
+        returnedColorId: data.colorId ?? null,
         operation: existingId ? 'update' : 'create',
       });
       return id;

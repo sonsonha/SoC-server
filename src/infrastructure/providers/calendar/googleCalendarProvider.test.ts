@@ -70,7 +70,8 @@ describe('GoogleCalendarProvider', () => {
         return new Response(JSON.stringify({ items: [] }), { status: 200 });
       }
       if (url.includes('/events') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ id: 'evt-created' }), { status: 200 });
+        const body = init.body ? JSON.parse(String(init.body)) as { colorId?: string } : {};
+        return new Response(JSON.stringify({ id: 'evt-created', colorId: body.colorId }), { status: 200 });
       }
       return new Response('unexpected', { status: 500 });
     });
@@ -139,6 +140,44 @@ describe('GoogleCalendarProvider', () => {
     )?.[0]);
     expect(eventUrl).toContain('personal-os-1');
     expect(eventUrl).not.toContain('sonha2002');
+  });
+
+  it('forces colorId when Google omits it from the PATCH response', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/calendarList')) {
+        return new Response(JSON.stringify({
+          items: [{ id: 'cos-cal-1', summary: 'Personal OS' }],
+        }), { status: 200 });
+      }
+      if (url.includes('/events/evt-old') && init?.method === 'PATCH') {
+        const body = init.body ? JSON.parse(String(init.body)) as { colorId?: string; summary?: string } : {};
+        // Full upsert returns without colorId; color-only PATCH persists it.
+        if (body.colorId && !body.summary) {
+          return new Response(JSON.stringify({ id: 'evt-old', colorId: body.colorId }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ id: 'evt-old' }), { status: 200 });
+      }
+      return new Response(`unexpected ${url}`, { status: 500 });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const provider = new GoogleCalendarProvider(
+      async () => ({ accessToken: 'access', expiresAt: new Date(Date.now() + 3600_000) }),
+      async () => null,
+    );
+    const id = await provider.upsertCosEvent({
+      eventId: 'evt-old',
+      title: 'Recolor',
+      startEpochMs: 1_000,
+      endEpochMs: 2_000,
+      colorId: '9',
+    });
+    expect(id).toBe('evt-old');
+    const colorOnly = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === 'PATCH' && String(init.body) === '{"colorId":"9"}',
+    );
+    expect(colorOnly).toBeTruthy();
   });
 
   it('updates an existing Google event', async () => {
