@@ -140,6 +140,21 @@ describe('normalizeGoalStructureSuggestion', () => {
     expect(goalStructureSuggestionSchema.parse(normalizeGoalStructureSuggestion(raw)).projects).toHaveLength(1);
   });
 
+  it('replaces time units on COUNT processes with a noun from the name', () => {
+    const parsed = goalStructureSuggestionSchema.parse(normalizeGoalStructureSuggestion({
+      ...baseValid(),
+      processes: [{
+        name: 'Quality applications',
+        metricType: 'COUNT',
+        targetValue: 4,
+        period: 'WEEK',
+        unit: 'h',
+        confidence: 'HIGH',
+      }],
+    }));
+    expect(parsed.processes[0]?.unit).toBe('applications');
+  });
+
   it('rejects unknown enums after normalization', () => {
     const raw = {
       ...baseValid(),

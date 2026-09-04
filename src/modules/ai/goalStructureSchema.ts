@@ -138,6 +138,8 @@ Rules:
 - Avoid generic motivational advice and overplanning.
 - Process metricType is COUNT or DURATION only; period is always WEEK.
 - For DURATION processes, targetValue is hours (e.g. 3h → 3, unit "h"). Do not use minutes.
+- For COUNT processes, set unit to a short plural noun that matches the work (e.g. "applications", "sections", "sessions", "problems"). Never use "h", "hours", or "min" for COUNT.
+- Example: process "Quality applications" with target 4/week → metricType COUNT, targetValue 4, unit "applications".
 - suggestedDefaultProcessName must exactly match a process name in THIS suggestion when linking.
 - Surface uncertainty via assumptions and questionsForUser.
 - In rationale for each Project, briefly justify why STANDARD vs HABIT.

@@ -145,6 +145,12 @@ function normalizeProcess(value: unknown): unknown {
     const converted = durationProcessToHours(targetValue, typeof unit === 'string' ? unit : null);
     targetValue = converted.targetValue;
     unit = converted.unit;
+  } else if (metricType === 'COUNT') {
+    const raw = typeof unit === 'string' ? unit.trim().toLowerCase() : '';
+    const timeish = /^(h|hr|hrs|hour|hours|min|mins|minute|minutes|m)$/.test(raw);
+    if (!raw || timeish) {
+      unit = guessCountUnitFromName(typeof obj.name === 'string' ? obj.name : '');
+    }
   }
   return {
     ...obj,
@@ -156,6 +162,20 @@ function normalizeProcess(value: unknown): unknown {
     rationale: emptyToUndefined(obj.rationale) ?? null,
     confidence: normalizeConfidence(obj.confidence),
   };
+}
+
+/** Mirror of web guessCountUnit — keep COUNT processes off hour/minute labels. */
+function guessCountUnitFromName(name: string): string {
+  const n = name.trim().toLowerCase();
+  if (!n) return 'sessions';
+  if (/\b(applications?|applicat\w*|apply|apps?)\b/.test(n)) return 'applications';
+  if (/\bsections?\b/.test(n)) return 'sections';
+  if (/\boutreach|messages?|emails?\b/.test(n)) return 'messages';
+  if (/\binterviews?\b/.test(n) && !/\b(prepar|practic|study|mock)\b/.test(n)) return 'interviews';
+  if (/\b(problems?|leetcode|coding)\b/.test(n)) return 'problems';
+  if (/\bsessions?\b/.test(n)) return 'sessions';
+  if (/\breps?\b/.test(n)) return 'reps';
+  return 'sessions';
 }
 
 function normalizeProjectType(value: unknown): unknown {
