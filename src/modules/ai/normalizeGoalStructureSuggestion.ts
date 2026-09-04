@@ -1,7 +1,10 @@
 /**
  * Harmless representation normalization before Zod.
  * Does not invent business meaning for unknown values.
+ * DURATION processes with minute units are converted to hours (engine contract).
  */
+
+import { durationProcessToHours } from '../../application/durationProcessUnits.js';
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -135,13 +138,21 @@ function normalizeMilestone(value: unknown): unknown {
 function normalizeProcess(value: unknown): unknown {
   const obj = asRecord(value);
   if (!obj) return value;
+  const metricType = normalizeProcessMetricType(obj.metricType);
+  let targetValue = coerceNumber(obj.targetValue);
+  let unit = emptyToUndefined(obj.unit) ?? null;
+  if (metricType === 'DURATION' && typeof targetValue === 'number') {
+    const converted = durationProcessToHours(targetValue, typeof unit === 'string' ? unit : null);
+    targetValue = converted.targetValue;
+    unit = converted.unit;
+  }
   return {
     ...obj,
     name: emptyToUndefined(obj.name),
-    metricType: normalizeProcessMetricType(obj.metricType),
-    targetValue: coerceNumber(obj.targetValue),
+    metricType,
+    targetValue,
     period: normalizePeriod(obj.period ?? 'WEEK'),
-    unit: emptyToUndefined(obj.unit) ?? null,
+    unit,
     rationale: emptyToUndefined(obj.rationale) ?? null,
     confidence: normalizeConfidence(obj.confidence),
   };

@@ -22,6 +22,7 @@ import {
 } from './userAiContext.js';
 import { normalizeGoalStructureSuggestion } from './normalizeGoalStructureSuggestion.js';
 import { formatZodIssuesSafe, safeTopLevelKeys } from './goalStructureValidation.js';
+import { durationProcessToHours } from '../../application/durationProcessUnits.js';
 
 const MAX_TITLE = 240;
 const MAX_WHY = 4_000;
@@ -283,15 +284,21 @@ export class GoalStructuringService {
       milestoneIds[0] ?? null,
     );
     const processIds = suggestion.processes.map(() => randomUUID());
-    const processes = suggestion.processes.map((p, index) => ({
-      id: processIds[index]!,
-      name: p.name,
-      measurementType: p.metricType,
-      targetValue: p.targetValue,
-      unit: p.unit ?? undefined,
-      period: 'WEEK' as const,
-      active: true,
-    }));
+    const processes = suggestion.processes.map((p, index) => {
+      const measurementType = p.metricType;
+      const converted = measurementType === 'DURATION'
+        ? durationProcessToHours(p.targetValue, p.unit)
+        : { targetValue: p.targetValue, unit: p.unit ?? undefined };
+      return {
+        id: processIds[index]!,
+        name: p.name,
+        measurementType,
+        targetValue: converted.targetValue,
+        unit: measurementType === 'DURATION' ? 'h' : (converted.unit as string | undefined),
+        period: 'WEEK' as const,
+        active: true,
+      };
+    });
     const processIdByName = new Map(
       processes.map((p) => [p.name.trim().toLowerCase(), p.id] as const),
     );

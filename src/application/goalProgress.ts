@@ -256,6 +256,21 @@ function targetForWindow(process: GoalProcess, start: Date, end: Date) {
   return count * process.targetValue;
 }
 
+const MINUTE_UNITS = new Set(['min', 'mins', 'minute', 'minutes', 'm']);
+
+function isMinuteUnit(unit?: string) {
+  return Boolean(unit && MINUTE_UNITS.has(unit.trim().toLowerCase()));
+}
+
+/** DURATION buckets are hours; legacy AI targets stored minutes with unit "min". */
+function durationTargetHours(process: GoalProcess, start: Date, end: Date) {
+  const raw = targetForWindow(process, start, end);
+  if (isMinuteUnit(process.unit)) {
+    return Math.round((raw / 60) * 10) / 10;
+  }
+  return raw;
+}
+
 function taskPlannedMinutes(task: GoalTaskEvidence, blocks: GoalBlockEvidence[], start: Date, end: Date) {
   return blocks
     .filter((block) => block.taskId === task.id && within(block.startAt, start, end))
@@ -281,17 +296,18 @@ function computeBucket(
   end: Date,
 ): GoalProgressBucket {
   const linkedTasks = tasks.filter((task) => task.goalProcessId === process.id);
-  const target = targetForWindow(process, start, end);
   if (process.measurementType === 'DURATION') {
     const plannedMinutes = linkedTasks.reduce((sum, task) => sum + taskPlannedMinutes(task, blocks, start, end), 0);
     const completedMinutes = linkedTasks.reduce((sum, task) => sum + taskCompletedMinutes(task, blocks, start, end), 0);
     return {
-      target,
+      target: durationTargetHours(process, start, end),
       planned: Math.round((plannedMinutes / 60) * 10) / 10,
       completed: Math.round((completedMinutes / 60) * 10) / 10,
-      unit: process.unit || 'h',
+      unit: 'h',
     };
   }
+
+  const target = targetForWindow(process, start, end);
 
   const plannedTasks = linkedTasks.filter((task) => taskInWindow(task, blocks, start, end));
   const completedTasks = linkedTasks.filter((task) => task.status === 'DONE' && within(task.completedAt, start, end));

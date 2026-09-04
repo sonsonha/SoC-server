@@ -87,7 +87,8 @@ describe('normalizeGoalStructureSuggestion', () => {
     expect(parsed.metrics[0]?.currentValue).toBe(0);
     expect(parsed.processes[0]?.metricType).toBe('DURATION');
     expect(parsed.processes[0]?.period).toBe('WEEK');
-    expect(parsed.processes[0]?.targetValue).toBe(180);
+    expect(parsed.processes[0]?.targetValue).toBe(3);
+    expect(parsed.processes[0]?.unit).toBe('h');
     expect(parsed.timeProtectedMinutesPerWeek).toBe(180);
     expect(parsed.nextActions[0]?.estimatedMinutes).toBe(45);
     expect(parsed.reviewCadence).toBe('WEEKLY');

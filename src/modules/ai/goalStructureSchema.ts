@@ -137,7 +137,7 @@ Rules:
 - Respect existing weekly workload — do not pile on many new Processes or Habit Projects.
 - Avoid generic motivational advice and overplanning.
 - Process metricType is COUNT or DURATION only; period is always WEEK.
-- For DURATION processes, targetValue is minutes (e.g. 3h → 180, unit "min").
+- For DURATION processes, targetValue is hours (e.g. 3h → 3, unit "h"). Do not use minutes.
 - suggestedDefaultProcessName must exactly match a process name in THIS suggestion when linking.
 - Surface uncertainty via assumptions and questionsForUser.
 - In rationale for each Project, briefly justify why STANDARD vs HABIT.
