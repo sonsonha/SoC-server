@@ -1556,14 +1556,21 @@ export class PlannerV2Service {
   }
 
   async retryCalendarSync(userId: string): Promise<{ attempted: number; synced: number; failed: number }> {
+    const now = Date.now();
+    const fromEpochMs = now - 86_400_000;
+    const toEpochMs = now + 14 * 86_400_000;
+    // Include already-SYNCED blocks in the active window so Sync now can refresh
+    // Google event colors (priority palette) and not only PENDING/FAILED retries.
     const rows = await this.db
-      .select({ id: timeBlocks.id })
+      .select({ id: timeBlocks.id, syncStatus: timeBlocks.syncStatus })
       .from(timeBlocks)
       .where(
         and(
           eq(timeBlocks.userId, userId),
           isNull(timeBlocks.deletedAt),
-          inArray(timeBlocks.syncStatus, ['PENDING', 'FAILED']),
+          lt(timeBlocks.startEpochMs, toEpochMs),
+          gt(timeBlocks.endEpochMs, fromEpochMs),
+          inArray(timeBlocks.syncStatus, ['PENDING', 'FAILED', 'SYNCED']),
         ),
       );
     let synced = 0;
