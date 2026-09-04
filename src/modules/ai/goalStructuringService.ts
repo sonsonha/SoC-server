@@ -494,10 +494,16 @@ function formatPrimaryMetric(suggestion: GoalStructureSuggestion): string {
       : '';
     return `Metric needs clarification: ${metric.name}.${alts}`;
   }
-  const current = metric.currentValue == null ? '—' : String(metric.currentValue);
-  const target = metric.targetValue == null ? '—' : String(metric.targetValue);
   const unit = metric.unit ? ` ${metric.unit}` : '';
-  return `${metric.name}\nCurrent: ${current}${unit}\nTarget: ${target}${unit}`.trim();
+  const parts = [metric.name.trim()].filter(Boolean);
+  if (metric.targetValue != null) {
+    parts.push(`Target: ${metric.targetValue}${unit}`.trim());
+  }
+  // Omit Current: 0 — observations own "current"; including it made the UI parse target as 0.
+  if (metric.currentValue != null && metric.currentValue !== 0) {
+    parts.push(`Baseline: ${metric.currentValue}${unit}`.trim());
+  }
+  return parts.join('\n');
 }
 
 /** Test helper — clear rate limit map between tests. */
