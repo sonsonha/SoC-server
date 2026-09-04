@@ -60,7 +60,10 @@ describe('GoogleCalendarProvider', () => {
   it('creates a Google event when none exists', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes('/calendars') && !url.includes('/events') && init?.method === 'POST') {
+      if (url.includes('/calendars') && !url.includes('/events') && !url.includes('calendarList') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 'cos-cal-1' }), { status: 200 });
+      }
+      if (url.includes('/calendarList') && init?.method === 'POST') {
         return new Response(JSON.stringify({ id: 'cos-cal-1' }), { status: 200 });
       }
       if (url.includes('/calendarList')) {
@@ -93,6 +96,49 @@ describe('GoogleCalendarProvider', () => {
     expect(body.start.timeZone).toBe('Asia/Ho_Chi_Minh');
     expect(body.end.timeZone).toBe('Asia/Ho_Chi_Minh');
     expect(body.colorId).toBe('11');
+  });
+
+  it('rejects stored primary write calendar and creates Personal OS instead', async () => {
+    const onResolved = vi.fn(async () => undefined);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/calendarList') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 'personal-os-1' }), { status: 200 });
+      }
+      if (url.includes('/calendarList')) {
+        return new Response(JSON.stringify({
+          items: [
+            { id: 'sonha2002.12@gmail.com', summary: 'Ha Son', primary: true, selected: true },
+          ],
+        }), { status: 200 });
+      }
+      if (url.includes('/calendars') && !url.includes('/events') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 'personal-os-1' }), { status: 200 });
+      }
+      if (url.includes('/calendars/personal-os-1/events') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 'evt-on-pos' }), { status: 200 });
+      }
+      return new Response(`unexpected ${url}`, { status: 500 });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const provider = new GoogleCalendarProvider(
+      async () => ({ accessToken: 'access', expiresAt: new Date(Date.now() + 3600_000) }),
+      async () => null,
+      { writeCalendarId: 'sonha2002.12@gmail.com', onWriteCalendarResolved: onResolved },
+    );
+    const id = await provider.upsertCosEvent({
+      title: 'nice',
+      startEpochMs: 1_000,
+      endEpochMs: 2_000,
+    });
+    expect(id).toBe('evt-on-pos');
+    expect(onResolved).toHaveBeenCalledWith('personal-os-1');
+    const eventUrl = String(fetchMock.mock.calls.find(
+      ([url, init]) => init?.method === 'POST' && String(url).includes('/events'),
+    )?.[0]);
+    expect(eventUrl).toContain('personal-os-1');
+    expect(eventUrl).not.toContain('sonha2002');
   });
 
   it('updates an existing Google event', async () => {

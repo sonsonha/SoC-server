@@ -75,10 +75,15 @@ export async function createUserCalendarProviderAsync(deps: {
     return fake ?? new FakeCalendarProvider();
   }
   const stored = await tokenService.getGoogleCalendarTokens(userId);
-  const legacyFallback = deps.allowLegacyCosCalendarFallback
+  const legacyRaw = deps.allowLegacyCosCalendarFallback
     ? (config.GOOGLE_COS_CALENDAR_ID ?? null)
     : null;
-  const writeCalendarId = stored?.writeCalendarId ?? legacyFallback;
+  // Never treat Google's primary calendar (often shown as the user's name) as the write target.
+  const legacyFallback = legacyRaw && legacyRaw !== 'primary' ? legacyRaw : null;
+  const storedWrite = stored?.writeCalendarId && stored.writeCalendarId !== 'primary'
+    ? stored.writeCalendarId
+    : null;
+  const writeCalendarId = storedWrite ?? legacyFallback;
   return new GoogleCalendarProvider(
     async () => {
       const t = await tokenService.getGoogleCalendarTokens(userId);

@@ -261,39 +261,36 @@ export class GoogleCalendarProvider implements CalendarProvider {
     return this.fetchEvents(accessToken, calendarId, fromEpochMs, toEpochMs, 'listCosEvents');
   }
 
-  /** Resolve or create the dedicated CoS write calendar. */
+  /** Resolve or create the dedicated Personal OS write calendar — never primary / "Ha Son". */
   private async ensureCosCalendarId(accessToken: string): Promise<string> {
-    if (this.resolvedCosCalendarId) return this.resolvedCosCalendarId;
+    const list = await this.fetchCalendarList(accessToken);
+    const dedicated = (item: { id?: string; summary?: string; primary?: boolean } | undefined) => {
+      if (!item?.id || item.id === 'primary' || item.primary) return false;
+      if (!item.summary) return false;
+      return COS_CALENDAR_NAMES.some((n) => n.toLowerCase() === item.summary!.toLowerCase());
+    };
 
-    const listRes = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (listRes.ok) {
-      const data = (await listRes.json()) as {
-        items?: Array<{ id?: string; summary?: string }>;
-      };
-      const names = new Set(COS_CALENDAR_NAMES.map((n) => n.toLowerCase()));
-      const match = (data.items ?? []).find((c) => c.summary && names.has(c.summary.toLowerCase()));
-      if (match?.id) {
-        this.resolvedCosCalendarId = match.id;
-        console.info('google.cosCalendar resolved', { calendarId: match.id, summary: match.summary });
-        if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(match.id);
-        return match.id;
+    // Cached / stored id is only valid if it is still a dedicated CoS calendar.
+    // Legacy env sometimes pointed at primary (shown as the user's name, e.g. "Ha Son").
+    if (this.resolvedCosCalendarId && this.resolvedCosCalendarId !== 'primary') {
+      const cached = list.find((c) => c.id === this.resolvedCosCalendarId);
+      if (dedicated(cached)) {
+        return this.resolvedCosCalendarId;
       }
-    } else {
-      const detail = await listRes.text();
-      console.error('google.calendarList failed', {
-        googleStatus: listRes.status,
-        ...parseGoogleErrorBody(detail),
+      console.warn('google.cosCalendar rejecting non-dedicated write calendar', {
+        calendarId: this.resolvedCosCalendarId,
+        summary: cached?.summary ?? null,
+        primary: cached?.primary ?? null,
       });
-      // Fall through to create — may also fail if scopes are insufficient.
-      if (listRes.status === 401 || listRes.status === 403) {
-        throw googleErrorFromHttp({
-          operation: 'ensureCosCalendarId.list',
-          googleStatus: listRes.status,
-          detail,
-        });
-      }
+      this.resolvedCosCalendarId = null;
+    }
+
+    const match = list.find((c) => dedicated(c));
+    if (match?.id) {
+      this.resolvedCosCalendarId = match.id;
+      console.info('google.cosCalendar resolved', { calendarId: match.id, summary: match.summary });
+      if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(match.id);
+      return match.id;
     }
 
     const createRes = await fetch('https://www.googleapis.com/calendar/v3/calendars', {
@@ -324,10 +321,66 @@ export class GoogleCalendarProvider implements CalendarProvider {
         { statusCode: 502, operation: 'ensureCosCalendarId.create' },
       );
     }
+
+    // Make sure it shows under "My calendars" and is selected.
+    const listInsert = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ id: created.id, selected: true, hidden: false }),
+    });
+    if (!listInsert.ok && listInsert.status !== 409) {
+      const detail = await listInsert.text();
+      console.warn('google.cosCalendar calendarList insert failed', {
+        calendarId: created.id,
+        googleStatus: listInsert.status,
+        ...parseGoogleErrorBody(detail),
+      });
+    }
+
     this.resolvedCosCalendarId = created.id;
     console.info('google.cosCalendar created', { calendarId: created.id });
     if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(created.id);
     return created.id;
+  }
+
+  private async fetchCalendarList(accessToken: string): Promise<Array<{
+    id?: string;
+    summary?: string;
+    selected?: boolean;
+    primary?: boolean;
+    accessRole?: string;
+  }>> {
+    const listRes = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!listRes.ok) {
+      const detail = await listRes.text();
+      console.error('google.calendarList failed', {
+        googleStatus: listRes.status,
+        ...parseGoogleErrorBody(detail),
+      });
+      if (listRes.status === 401 || listRes.status === 403) {
+        throw googleErrorFromHttp({
+          operation: 'ensureCosCalendarId.list',
+          googleStatus: listRes.status,
+          detail,
+        });
+      }
+      return [];
+    }
+    const data = (await listRes.json()) as {
+      items?: Array<{
+        id?: string;
+        summary?: string;
+        selected?: boolean;
+        primary?: boolean;
+        accessRole?: string;
+      }>;
+    };
+    return data.items ?? [];
   }
 
   private eventBody(event: Omit<CalendarEvent, 'eventId'> & { eventId?: string }) {
