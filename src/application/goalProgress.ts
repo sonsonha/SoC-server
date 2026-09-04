@@ -309,7 +309,7 @@ function computeBucket(
     target,
     planned: plannedTasks.length,
     completed: completedTasks.length,
-    unit: process.unit,
+    unit: process.unit || undefined,
   };
 }
 
