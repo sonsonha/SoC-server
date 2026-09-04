@@ -10,7 +10,7 @@ import {
 } from '../infrastructure/db/schema/index.js';
 import type { CalendarProvider } from '../infrastructure/providers/calendar/types.js';
 import { isGoogleCalendarError } from '../infrastructure/providers/calendar/googleErrors.js';
-import { resolveGoogleEventColorId } from '../infrastructure/providers/calendar/googleCalendarColors.js';
+import { resolveGoogleEventColorId, type PriorityLike } from '../infrastructure/providers/calendar/googleCalendarColors.js';
 import {
   buildGoalProgress,
   type GoalMetricObservation,
@@ -1587,17 +1587,18 @@ export class PlannerV2Service {
     const calendar = await this.calendarFor(userId);
     if (!calendar.upsertCosEvent) return this.serializeBlock(row);
     try {
-      let priority: number | null = null;
+      let priority: PriorityLike | null = null;
       if (row.taskId) {
         const taskRows = await this.db
           .select({ priority: tasks.priority })
           .from(tasks)
           .where(and(eq(tasks.id, row.taskId), eq(tasks.userId, userId)))
           .limit(1);
-        priority = taskRows[0]?.priority ?? null;
+        const raw = taskRows[0]?.priority;
+        priority = raw === 1 || raw === 2 || raw === 3 || raw === 4 ? raw : null;
       }
       const colorId = resolveGoogleEventColorId({
-        priority: priority ?? undefined,
+        priority,
         color: row.color,
       });
       const googleEventId = await calendar.upsertCosEvent({
