@@ -498,6 +498,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
         id,
         timeBlockId: timeBlockId ?? null,
         hasGoogleEventId,
+        colorId: event.colorId ?? null,
         operation: existingId ? 'update' : 'create',
       });
       return id;

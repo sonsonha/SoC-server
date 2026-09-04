@@ -1608,6 +1608,14 @@ export class PlannerV2Service {
         priority,
         color: row.color,
       });
+      console.info('planner.syncBlock color', {
+        timeBlockId: id,
+        taskId: row.taskId ?? null,
+        priority,
+        blockColor: row.color,
+        colorId,
+        googleEventId: row.googleEventId ?? null,
+      });
       const googleEventId = await calendar.upsertCosEvent({
         eventId: row.googleEventId ?? undefined,
         title: row.title,
