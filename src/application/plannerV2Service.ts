@@ -747,10 +747,7 @@ export class PlannerV2Service {
       : [row];
 
     for (const target of targets) {
-      const calendar = await this.calendarFor(userId);
-      if (target.googleEventId && calendar.deleteCosEvent) {
-        await calendar.deleteCosEvent(target.googleEventId);
-      }
+      // Soft-delete locally first — never block unschedule on Google failures.
       await this.db
         .update(timeBlocks)
         .set({
@@ -762,6 +759,22 @@ export class PlannerV2Service {
         .where(and(eq(timeBlocks.id, target.id), eq(timeBlocks.userId, userId)));
       if (target.taskId) {
         await this.syncTaskStatusFromSessions(userId, target.taskId);
+      }
+
+      if (target.googleEventId) {
+        try {
+          const calendar = await this.calendarFor(userId);
+          await calendar.deleteCosEvent?.(target.googleEventId);
+        } catch (err) {
+          const safe = isGoogleCalendarError(err)
+            ? err.toLogFields()
+            : { message: err instanceof Error ? err.message : 'unknown' };
+          console.warn('planner.deleteTimeBlock google cleanup failed', {
+            timeBlockId: target.id,
+            googleEventId: target.googleEventId,
+            ...safe,
+          });
+        }
       }
     }
     return { id, deleted: true as const, removedCount: targets.length };

@@ -566,7 +566,15 @@ export class GoogleCalendarProvider implements CalendarProvider {
         await this.fallback.deleteCosEvent!(eventId);
         return;
       }
-      throw err;
+      // Token/scope problems must not block local unschedule — caller already
+      // soft-deleted. Log and leave the Google copy for a later sync cleanup.
+      console.warn('google.deleteCosEvent auth skipped', {
+        hasGoogleEventId: true,
+        ...(err instanceof GoogleCalendarError
+          ? err.toLogFields()
+          : { message: err instanceof Error ? err.message : 'unknown' }),
+      });
+      return;
     }
     try {
       const calendarId = await this.ensureCosCalendarId(accessToken);
