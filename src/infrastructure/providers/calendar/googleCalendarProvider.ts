@@ -15,6 +15,13 @@ type TokenBundle = {
 const COS_CALENDAR_NAMES = ['Personal OS', 'Personal Planner', 'Personal Chief of Staff'] as const;
 const PLANNER_TZ = 'Asia/Ho_Chi_Minh';
 const PLANNER_TZ_OFFSET = '+07:00';
+/** Dark green for the Personal OS write calendar in Google's sidebar. */
+const POS_CALENDAR_APPEARANCE = {
+  selected: true,
+  hidden: false,
+  backgroundColor: '#166534',
+  foregroundColor: '#ffffff',
+} as const;
 
 export function parseConfiguredReadCalendarIds(raw?: string): string[] {
   if (!raw?.trim()) return [];
@@ -275,6 +282,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
     if (this.resolvedCosCalendarId && this.resolvedCosCalendarId !== 'primary') {
       const cached = list.find((c) => c.id === this.resolvedCosCalendarId);
       if (dedicated(cached)) {
+        await this.ensureWriteCalendarAppearance(accessToken, this.resolvedCosCalendarId);
         return this.resolvedCosCalendarId;
       }
       console.warn('google.cosCalendar rejecting non-dedicated write calendar', {
@@ -289,6 +297,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
     if (match?.id) {
       this.resolvedCosCalendarId = match.id;
       console.info('google.cosCalendar resolved', { calendarId: match.id, summary: match.summary });
+      await this.ensureWriteCalendarAppearance(accessToken, match.id);
       if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(match.id);
       return match.id;
     }
@@ -322,14 +331,14 @@ export class GoogleCalendarProvider implements CalendarProvider {
       );
     }
 
-    // Make sure it shows under "My calendars" and is selected.
+    // Insert into My calendars with dark-green appearance.
     const listInsert = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ id: created.id, selected: true, hidden: false }),
+      body: JSON.stringify({ id: created.id, ...POS_CALENDAR_APPEARANCE }),
     });
     if (!listInsert.ok && listInsert.status !== 409) {
       const detail = await listInsert.text();
@@ -338,12 +347,39 @@ export class GoogleCalendarProvider implements CalendarProvider {
         googleStatus: listInsert.status,
         ...parseGoogleErrorBody(detail),
       });
+      // 409 = already in list — still apply color.
+      await this.ensureWriteCalendarAppearance(accessToken, created.id);
+    } else if (listInsert.status === 409) {
+      await this.ensureWriteCalendarAppearance(accessToken, created.id);
     }
 
     this.resolvedCosCalendarId = created.id;
     console.info('google.cosCalendar created', { calendarId: created.id });
     if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(created.id);
     return created.id;
+  }
+
+  /** Keep Personal OS calendar selected + dark green in Google's sidebar. */
+  private async ensureWriteCalendarAppearance(accessToken: string, calendarId: string): Promise<void> {
+    const res = await fetch(
+      `https://www.googleapis.com/calendar/v3/users/me/calendarList/${encodeURIComponent(calendarId)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(POS_CALENDAR_APPEARANCE),
+      },
+    );
+    if (!res.ok) {
+      const detail = await res.text();
+      console.warn('google.cosCalendar appearance patch failed', {
+        calendarId,
+        googleStatus: res.status,
+        ...parseGoogleErrorBody(detail),
+      });
+    }
   }
 
   private async fetchCalendarList(accessToken: string): Promise<Array<{

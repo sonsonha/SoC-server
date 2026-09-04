@@ -57,7 +57,7 @@ export function priorityToHex(priority: PlannerPriorityInput): string {
   const normalized = priorityFromDb(priorityToDb(priority));
   if (normalized === 'P1') return '#dc2626';
   if (normalized === 'P3') return '#16a34a';
-  if (normalized === 'P4') return '#ca8a04';
+  if (normalized === 'P4') return '#64748b';
   return '#2563eb';
 }
 

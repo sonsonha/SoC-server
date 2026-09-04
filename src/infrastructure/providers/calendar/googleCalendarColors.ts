@@ -9,12 +9,12 @@ export type GoogleEventColorId =
 
 export type PriorityLike = 'P1' | 'P2' | 'P3' | 'P4' | 'HIGH' | 'NORMAL' | 'LOW' | 'DROP' | 1 | 2 | 3 | 4;
 
-/** Do now → Tomato, Important → Blueberry, Delegate → Basil, Drop → Banana */
+/** Do now → Tomato (red), Important → Blueberry (blue), Delegate → Basil, Drop → Graphite (gray) */
 const PRIORITY_TO_COLOR: Record<'P1' | 'P2' | 'P3' | 'P4', GoogleEventColorId> = {
   P1: '11',
   P2: '9',
   P3: '10',
-  P4: '5',
+  P4: '8',
 };
 
 const HEX_TO_COLOR: Array<{ hex: string; colorId: GoogleEventColorId }> = [
@@ -29,12 +29,19 @@ const HEX_TO_COLOR: Array<{ hex: string; colorId: GoogleEventColorId }> = [
   { hex: '#16a34a', colorId: '10' },
   { hex: '#22c55e', colorId: '10' },
   { hex: '#15803d', colorId: '10' },
-  { hex: '#ca8a04', colorId: '5' },
-  { hex: '#eab308', colorId: '5' },
-  { hex: '#f3a712', colorId: '5' },
-  { hex: '#a16207', colorId: '5' },
-  { hex: '#705cf6', colorId: '3' },
-  { hex: '#4f46e5', colorId: '3' },
+  { hex: '#166534', colorId: '10' },
+  { hex: '#64748b', colorId: '8' },
+  { hex: '#6b7280', colorId: '8' },
+  { hex: '#78716c', colorId: '8' },
+  { hex: '#57534e', colorId: '8' },
+  // Legacy Drop amber → still map to Graphite so old blocks re-sync gray
+  { hex: '#ca8a04', colorId: '8' },
+  { hex: '#eab308', colorId: '8' },
+  { hex: '#f3a712', colorId: '8' },
+  { hex: '#a16207', colorId: '8' },
+  // Legacy violet brand → Blueberry (Important), not Grape purple
+  { hex: '#705cf6', colorId: '9' },
+  { hex: '#4f46e5', colorId: '9' },
   { hex: '#11b8c7', colorId: '7' },
   { hex: '#0891b2', colorId: '7' },
 ];
