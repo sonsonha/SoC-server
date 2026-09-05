@@ -162,6 +162,13 @@
       "when": 1720000022000,
       "tag": "0024_habit_session_repeat",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1720000023000,
+      "tag": "0025_finance_v1",
+      "breakpoints": true
     }
   ]
 }

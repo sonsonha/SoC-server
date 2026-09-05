@@ -27,6 +27,16 @@ export { deviceFcmTokens, notificationLog, proactiveScanRuns } from './notificat
 export { integrationTokens, calendarCommitments, calendarSyncState, oauthConnectionStates } from './integrations.js';
 export { users, authSessions } from './identity.js';
 export {
+  financeAllocationSettings,
+  financeIncomeSources,
+  financeIncomeEntries,
+  financeIncomeAllocations,
+  financeExpenseCategories,
+  financeExpenseEntries,
+  financeDebts,
+  financeDebtPayments,
+} from './finance.js';
+export {
   weeklyPlans,
   weeklyOutcomes,
   planningPreferences,
