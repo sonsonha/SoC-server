@@ -23,6 +23,8 @@ export const financeAllocationSettings = pgTable(
     safetyPct: integer('safety_pct').notNull().default(15),
     growthPct: integer('growth_pct').notNull().default(30),
     funPct: integer('fun_pct').notNull().default(5),
+    /** Safety runway target in months of Core Monthly Burn (3|6|9|12). */
+    safetyTargetMonths: integer('safety_target_months').notNull().default(6),
     currency: text('currency').notNull().default('VND'),
     ...syncColumns,
   },
@@ -63,6 +65,11 @@ export const financeIncomeEntries = pgTable(
     /** Calendar date money was received (Asia/Ho_Chi_Minh day). */
     receivedAt: date('received_at').notNull(),
     note: text('note').notNull().default(''),
+    /** Policy percentages active when income was recorded (immutable Target Plan). */
+    policyLivingPct: integer('policy_living_pct').notNull().default(50),
+    policySafetyPct: integer('policy_safety_pct').notNull().default(15),
+    policyGrowthPct: integer('policy_growth_pct').notNull().default(30),
+    policyFunPct: integer('policy_fun_pct').notNull().default(5),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     ...syncColumns,
   },
@@ -105,8 +112,10 @@ export const financeExpenseCategories = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     name: text('name').notNull(),
-    /** ESSENTIAL | FIXED | DISCRETIONARY | OTHER */
+    /** ESSENTIAL | FIXED | DISCRETIONARY | OTHER — necessity/legacy kind. */
     kind: text('kind').notNull().default('OTHER'),
+    /** FIXED | VARIABLE — recurrence dimension (analytics Core Burn). */
+    recurrence: text('recurrence').notNull().default('VARIABLE'),
     /** Default funding bucket for expenses in this category. */
     defaultBucket: text('default_bucket').notNull().default('LIVING'),
     active: boolean('active').notNull().default(true),

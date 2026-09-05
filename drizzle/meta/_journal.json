@@ -183,6 +183,13 @@
       "when": 1720000025000,
       "tag": "0027_finance_four_buckets",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1720000026000,
+      "tag": "0028_finance_analytics",
+      "breakpoints": true
     }
   ]
 }

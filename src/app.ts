@@ -61,6 +61,7 @@ import { createPushProvider, NotificationService } from './infrastructure/notifi
 import { ProactiveScanService } from './modules/proactive/scanService.js';
 import { PlannerV2Service } from './application/plannerV2Service.js';
 import { FinanceService } from './application/financeService.js';
+import { FinanceAnalyticsService } from './application/financeAnalyticsService.js';
 import { plannerV2Routes } from './api/routes/plannerV2.js';
 import { financeRoutes } from './api/routes/finance.js';
 
@@ -379,11 +380,13 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   });
 
   const financeService = new FinanceService(deps.db);
+  const financeAnalyticsService = new FinanceAnalyticsService(deps.db);
   await financeRoutes(app, {
     deviceService,
     config: deps.config,
     identity: identityService,
     finance: financeService,
+    financeAnalytics: financeAnalyticsService,
   });
 
   const goalStructuringService = new GoalStructuringService(

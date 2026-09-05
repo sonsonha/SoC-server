@@ -14,6 +14,7 @@ import {
 
 export type FinanceBucket = 'LIVING' | 'SAFETY' | 'GROWTH' | 'FUN';
 export type ExpenseCategoryKind = 'ESSENTIAL' | 'FIXED' | 'DISCRETIONARY' | 'OTHER';
+export type ExpenseRecurrence = 'FIXED' | 'VARIABLE';
 
 export type AllocationPcts = {
   livingPct: number;
@@ -31,6 +32,8 @@ const DEFAULT_PCTS: AllocationPcts = {
   funPct: 5,
 };
 
+const DEFAULT_SAFETY_TARGET_MONTHS = 6;
+
 const LEGACY_GROWTH_BUCKETS = new Set([
   'INVESTING',
   'OPPORTUNITY',
@@ -41,27 +44,28 @@ const LEGACY_GROWTH_BUCKETS = new Set([
 const SEED_CATEGORIES: Array<{
   name: string;
   kind: ExpenseCategoryKind;
+  recurrence: ExpenseRecurrence;
   defaultBucket: FinanceBucket;
   sortOrder: number;
 }> = [
-  { name: 'Food', kind: 'ESSENTIAL', defaultBucket: 'LIVING', sortOrder: 10 },
-  { name: 'Groceries', kind: 'ESSENTIAL', defaultBucket: 'LIVING', sortOrder: 20 },
-  { name: 'Transport', kind: 'ESSENTIAL', defaultBucket: 'LIVING', sortOrder: 30 },
-  { name: 'Rent', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 40 },
-  { name: 'Electricity', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 50 },
-  { name: 'Internet', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 60 },
-  { name: 'Software/AI', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 70 },
-  { name: 'Phone', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 80 },
-  { name: 'Hosting', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 85 },
-  { name: 'Shopping', kind: 'DISCRETIONARY', defaultBucket: 'FUN', sortOrder: 90 },
-  { name: 'Entertainment', kind: 'DISCRETIONARY', defaultBucket: 'FUN', sortOrder: 100 },
-  { name: 'Health', kind: 'OTHER', defaultBucket: 'SAFETY', sortOrder: 110 },
-  { name: 'Education', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 120 },
-  { name: 'Books', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 125 },
-  { name: 'Courses', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 126 },
-  { name: 'Investing', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 127 },
-  { name: 'Product Experiment', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 128 },
-  { name: 'Other', kind: 'OTHER', defaultBucket: 'LIVING', sortOrder: 130 },
+  { name: 'Food', kind: 'ESSENTIAL', recurrence: 'VARIABLE', defaultBucket: 'LIVING', sortOrder: 10 },
+  { name: 'Groceries', kind: 'ESSENTIAL', recurrence: 'VARIABLE', defaultBucket: 'LIVING', sortOrder: 20 },
+  { name: 'Transport', kind: 'ESSENTIAL', recurrence: 'VARIABLE', defaultBucket: 'LIVING', sortOrder: 30 },
+  { name: 'Rent', kind: 'FIXED', recurrence: 'FIXED', defaultBucket: 'LIVING', sortOrder: 40 },
+  { name: 'Electricity', kind: 'FIXED', recurrence: 'FIXED', defaultBucket: 'LIVING', sortOrder: 50 },
+  { name: 'Internet', kind: 'FIXED', recurrence: 'FIXED', defaultBucket: 'LIVING', sortOrder: 60 },
+  { name: 'Software/AI', kind: 'FIXED', recurrence: 'FIXED', defaultBucket: 'LIVING', sortOrder: 70 },
+  { name: 'Phone', kind: 'FIXED', recurrence: 'FIXED', defaultBucket: 'LIVING', sortOrder: 80 },
+  { name: 'Hosting', kind: 'FIXED', recurrence: 'FIXED', defaultBucket: 'LIVING', sortOrder: 85 },
+  { name: 'Shopping', kind: 'DISCRETIONARY', recurrence: 'VARIABLE', defaultBucket: 'FUN', sortOrder: 90 },
+  { name: 'Entertainment', kind: 'DISCRETIONARY', recurrence: 'VARIABLE', defaultBucket: 'FUN', sortOrder: 100 },
+  { name: 'Health', kind: 'OTHER', recurrence: 'VARIABLE', defaultBucket: 'SAFETY', sortOrder: 110 },
+  { name: 'Education', kind: 'OTHER', recurrence: 'VARIABLE', defaultBucket: 'GROWTH', sortOrder: 120 },
+  { name: 'Books', kind: 'OTHER', recurrence: 'VARIABLE', defaultBucket: 'GROWTH', sortOrder: 125 },
+  { name: 'Courses', kind: 'OTHER', recurrence: 'VARIABLE', defaultBucket: 'GROWTH', sortOrder: 126 },
+  { name: 'Investing', kind: 'OTHER', recurrence: 'VARIABLE', defaultBucket: 'GROWTH', sortOrder: 127 },
+  { name: 'Product Experiment', kind: 'OTHER', recurrence: 'VARIABLE', defaultBucket: 'GROWTH', sortOrder: 128 },
+  { name: 'Other', kind: 'OTHER', recurrence: 'VARIABLE', defaultBucket: 'LIVING', sortOrder: 130 },
 ];
 
 function financeError(message: string, statusCode = 400, code = 'INVALID_INPUT') {
@@ -81,6 +85,14 @@ export function canonicalizeBucket(value: string): FinanceBucket | null {
 
 function isKind(value: string): value is ExpenseCategoryKind {
   return ['ESSENTIAL', 'FIXED', 'DISCRETIONARY', 'OTHER'].includes(value);
+}
+
+function isRecurrence(value: string): value is ExpenseRecurrence {
+  return value === 'FIXED' || value === 'VARIABLE';
+}
+
+function defaultRecurrenceForKind(kind: ExpenseCategoryKind): ExpenseRecurrence {
+  return kind === 'FIXED' ? 'FIXED' : 'VARIABLE';
 }
 
 function sumPcts(pcts: AllocationPcts): number {
@@ -232,6 +244,7 @@ export class FinanceService {
         id,
         userId,
         ...DEFAULT_PCTS,
+        safetyTargetMonths: DEFAULT_SAFETY_TARGET_MONTHS,
         currency: 'VND',
         revision: 1,
         updatedAt: now,
@@ -272,6 +285,7 @@ export class FinanceService {
           userId,
           name: cat.name,
           kind: cat.kind,
+          recurrence: cat.recurrence,
           defaultBucket: cat.defaultBucket,
           active: true,
           sortOrder: cat.sortOrder,
@@ -298,7 +312,7 @@ export class FinanceService {
 
   async updateAllocationSettings(
     userId: string,
-    input: AllocationPcts & { currency?: string },
+    input: AllocationPcts & { currency?: string; safetyTargetMonths?: number },
   ) {
     if (sumPcts(input) !== 100) throw financeError('Allocation percentages must sum to 100');
     for (const n of [
@@ -311,6 +325,11 @@ export class FinanceService {
         throw financeError('Each percentage must be an integer 0–100');
       }
     }
+    if (input.safetyTargetMonths != null) {
+      if (![3, 6, 9, 12].includes(input.safetyTargetMonths)) {
+        throw financeError('safetyTargetMonths must be 3, 6, 9, or 12');
+      }
+    }
     const row = await this.ensureSettings(userId);
     await this.db
       .update(financeAllocationSettings)
@@ -319,6 +338,7 @@ export class FinanceService {
         safetyPct: input.safetyPct,
         growthPct: input.growthPct,
         funPct: input.funPct,
+        safetyTargetMonths: input.safetyTargetMonths ?? row.safetyTargetMonths,
         currency: input.currency ?? row.currency,
         revision: row.revision + 1,
         updatedAt: new Date(),
@@ -458,6 +478,10 @@ export class FinanceService {
         currency: settings.currency,
         receivedAt,
         note: (input.note ?? '').slice(0, 2000),
+        policyLivingPct: settings.livingPct,
+        policySafetyPct: settings.safetyPct,
+        policyGrowthPct: settings.growthPct,
+        policyFunPct: settings.funPct,
         createdAt: now,
         revision: 1,
         updatedAt: now,
@@ -609,6 +633,7 @@ export class FinanceService {
     input: {
       name: string;
       kind?: ExpenseCategoryKind;
+      recurrence?: ExpenseRecurrence;
       defaultBucket?: FinanceBucket;
       sortOrder?: number;
     },
@@ -616,8 +641,10 @@ export class FinanceService {
     const name = input.name.trim();
     if (!name) throw financeError('Name is required');
     const kind = input.kind ?? 'OTHER';
+    const recurrence = input.recurrence ?? defaultRecurrenceForKind(kind);
     const defaultBucket = input.defaultBucket ?? 'LIVING';
     if (!isKind(kind)) throw financeError('Invalid category kind');
+    if (!isRecurrence(recurrence)) throw financeError('Invalid recurrence');
     if (!isBucket(defaultBucket)) throw financeError('Invalid default bucket');
     const id = randomUUID();
     const now = new Date();
@@ -626,6 +653,7 @@ export class FinanceService {
       userId,
       name: name.slice(0, 120),
       kind,
+      recurrence,
       defaultBucket,
       active: true,
       sortOrder: input.sortOrder ?? 200,
@@ -643,6 +671,7 @@ export class FinanceService {
     input: Partial<{
       name: string;
       kind: ExpenseCategoryKind;
+      recurrence: ExpenseRecurrence;
       defaultBucket: FinanceBucket;
       active: boolean;
       sortOrder: number;
@@ -650,6 +679,9 @@ export class FinanceService {
   ) {
     const row = await this.requireCategory(userId, id);
     if (input.kind && !isKind(input.kind)) throw financeError('Invalid category kind');
+    if (input.recurrence && !isRecurrence(input.recurrence)) {
+      throw financeError('Invalid recurrence');
+    }
     if (input.defaultBucket && !isBucket(input.defaultBucket)) {
       throw financeError('Invalid default bucket');
     }
@@ -658,6 +690,7 @@ export class FinanceService {
       .set({
         name: input.name != null ? input.name.trim().slice(0, 120) : row.name,
         kind: input.kind ?? row.kind,
+        recurrence: input.recurrence ?? row.recurrence,
         defaultBucket: input.defaultBucket ?? row.defaultBucket,
         active: input.active ?? row.active,
         sortOrder: input.sortOrder ?? row.sortOrder,
@@ -1387,6 +1420,7 @@ export class FinanceService {
       safetyPct: row.safetyPct,
       growthPct: row.growthPct,
       funPct: row.funPct,
+      safetyTargetMonths: row.safetyTargetMonths,
       currency: row.currency,
       revision: row.revision,
       updatedAt: row.updatedAt.toISOString(),
@@ -1409,6 +1443,7 @@ export class FinanceService {
       id: row.id,
       name: row.name,
       kind: row.kind,
+      recurrence: row.recurrence,
       defaultBucket: row.defaultBucket,
       active: row.active,
       sortOrder: row.sortOrder,
@@ -1458,6 +1493,10 @@ export class FinanceService {
       currency: row.currency,
       receivedAt: String(row.receivedAt),
       note: row.note,
+      policyLivingPct: row.policyLivingPct,
+      policySafetyPct: row.policySafetyPct,
+      policyGrowthPct: row.policyGrowthPct,
+      policyFunPct: row.policyFunPct,
       createdAt: row.createdAt.toISOString(),
       revision: row.revision,
       updatedAt: row.updatedAt.toISOString(),

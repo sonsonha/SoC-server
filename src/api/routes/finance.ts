@@ -6,11 +6,14 @@ import { createPlannerAuthHook } from '../middleware/plannerAuth.js';
 import { createPersonalOsUserHook } from '../middleware/personalOsAuth.js';
 import type { IdentityService } from '../../modules/identity/identityService.js';
 import type { FinanceService } from '../../application/financeService.js';
+import type { FinanceAnalyticsService } from '../../application/financeAnalyticsService.js';
 
 const bucketSchema = z.enum(['LIVING', 'SAFETY', 'GROWTH', 'FUN']);
 const kindSchema = z.enum(['ESSENTIAL', 'FIXED', 'DISCRETIONARY', 'OTHER']);
+const recurrenceSchema = z.enum(['FIXED', 'VARIABLE']);
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const monthSchema = z.string().regex(/^\d{4}-\d{2}$/);
+const grainSchema = z.enum(['week', 'month', 'quarter', 'year']);
 
 function requireUserId(request: FastifyRequest): string {
   const userId = request.posUser?.id;
@@ -46,6 +49,7 @@ export async function financeRoutes(
     config: AppConfig;
     identity: IdentityService;
     finance: FinanceService;
+    financeAnalytics: FinanceAnalyticsService;
   },
 ) {
   const serviceAuth = createPlannerAuthHook(
@@ -54,6 +58,22 @@ export async function financeRoutes(
   );
   const userAuth = createPersonalOsUserHook(deps.identity);
   const auth = [serviceAuth, userAuth];
+
+  app.get('/v2/finance/analytics', { preHandler: auth }, async (request, reply) => {
+    try {
+      const userId = requireUserId(request);
+      const query = z.object({
+        grain: grainSchema.optional(),
+        period: z.string().min(4).max(16).optional(),
+      }).parse(request.query ?? {});
+      return reply.send(await deps.financeAnalytics.getAnalytics(userId, {
+        grain: query.grain,
+        period: query.period,
+      }));
+    } catch (err) {
+      return sendServiceError(reply, err);
+    }
+  });
 
   app.get('/v2/finance/summary', { preHandler: auth }, async (request, reply) => {
     try {
@@ -87,6 +107,12 @@ export async function financeRoutes(
         safetyPct: z.number().int().min(0).max(100),
         growthPct: z.number().int().min(0).max(100),
         funPct: z.number().int().min(0).max(100),
+        safetyTargetMonths: z.union([
+          z.literal(3),
+          z.literal(6),
+          z.literal(9),
+          z.literal(12),
+        ]).optional(),
         currency: z.string().max(8).optional(),
       }).parse(request.body ?? {});
       return reply.send(await deps.finance.updateAllocationSettings(userId, body));
@@ -202,6 +228,7 @@ export async function financeRoutes(
       const body = z.object({
         name: z.string().trim().min(1).max(120),
         kind: kindSchema.optional(),
+        recurrence: recurrenceSchema.optional(),
         defaultBucket: bucketSchema.optional(),
         sortOrder: z.number().int().optional(),
       }).parse(request.body ?? {});
@@ -218,6 +245,7 @@ export async function financeRoutes(
       const body = z.object({
         name: z.string().trim().min(1).max(120).optional(),
         kind: kindSchema.optional(),
+        recurrence: recurrenceSchema.optional(),
         defaultBucket: bucketSchema.optional(),
         active: z.boolean().optional(),
         sortOrder: z.number().int().optional(),
