@@ -7,14 +7,7 @@ import { createPersonalOsUserHook } from '../middleware/personalOsAuth.js';
 import type { IdentityService } from '../../modules/identity/identityService.js';
 import type { FinanceService } from '../../application/financeService.js';
 
-const bucketSchema = z.enum([
-  'LIVING',
-  'SAFETY',
-  'INVESTING',
-  'OPPORTUNITY',
-  'LEARNING',
-  'FUN',
-]);
+const bucketSchema = z.enum(['LIVING', 'SAFETY', 'GROWTH', 'FUN']);
 const kindSchema = z.enum(['ESSENTIAL', 'FIXED', 'DISCRETIONARY', 'OTHER']);
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const monthSchema = z.string().regex(/^\d{4}-\d{2}$/);
@@ -92,9 +85,7 @@ export async function financeRoutes(
       const body = z.object({
         livingPct: z.number().int().min(0).max(100),
         safetyPct: z.number().int().min(0).max(100),
-        investingPct: z.number().int().min(0).max(100),
-        opportunityPct: z.number().int().min(0).max(100),
-        learningPct: z.number().int().min(0).max(100),
+        growthPct: z.number().int().min(0).max(100),
         funPct: z.number().int().min(0).max(100),
         currency: z.string().max(8).optional(),
       }).parse(request.body ?? {});
@@ -159,6 +150,10 @@ export async function financeRoutes(
         amountVnd: z.number().int().nonnegative(),
         receivedAt: dateSchema.optional(),
         note: z.string().max(2000).optional(),
+        allocations: z.array(z.object({
+          bucket: bucketSchema,
+          amountVnd: z.number().int().nonnegative(),
+        })).optional(),
       }).parse(request.body ?? {});
       return reply.code(201).send(await deps.finance.createIncomeEntry(userId, body));
     } catch (err) {

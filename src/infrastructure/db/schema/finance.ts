@@ -19,11 +19,9 @@ export const financeAllocationSettings = pgTable(
     userId: text('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
-    livingPct: integer('living_pct').notNull().default(40),
-    safetyPct: integer('safety_pct').notNull().default(5),
-    investingPct: integer('investing_pct').notNull().default(30),
-    opportunityPct: integer('opportunity_pct').notNull().default(10),
-    learningPct: integer('learning_pct').notNull().default(10),
+    livingPct: integer('living_pct').notNull().default(50),
+    safetyPct: integer('safety_pct').notNull().default(15),
+    growthPct: integer('growth_pct').notNull().default(30),
     funPct: integer('fun_pct').notNull().default(5),
     currency: text('currency').notNull().default('VND'),
     ...syncColumns,
@@ -75,7 +73,7 @@ export const financeIncomeEntries = pgTable(
   ],
 );
 
-/** Snapshot of bucket allocation at income record time (6 rows per income). */
+/** Snapshot of bucket allocation at income record time (4 rows per income). */
 export const financeIncomeAllocations = pgTable(
   'finance_income_allocations',
   {
@@ -86,7 +84,7 @@ export const financeIncomeAllocations = pgTable(
     incomeEntryId: text('income_entry_id')
       .notNull()
       .references(() => financeIncomeEntries.id, { onDelete: 'cascade' }),
-    /** LIVING | SAFETY | INVESTING | OPPORTUNITY | LEARNING | FUN */
+    /** LIVING | SAFETY | GROWTH | FUN */
     bucket: text('bucket').notNull(),
     amountVnd: integer('amount_vnd').notNull(),
     pctApplied: integer('pct_applied').notNull(),

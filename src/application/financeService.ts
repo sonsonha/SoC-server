@@ -12,41 +12,31 @@ import {
   financeIncomeSources,
 } from '../infrastructure/db/schema/index.js';
 
-export type FinanceBucket =
-  | 'LIVING'
-  | 'SAFETY'
-  | 'INVESTING'
-  | 'OPPORTUNITY'
-  | 'LEARNING'
-  | 'FUN';
+export type FinanceBucket = 'LIVING' | 'SAFETY' | 'GROWTH' | 'FUN';
 export type ExpenseCategoryKind = 'ESSENTIAL' | 'FIXED' | 'DISCRETIONARY' | 'OTHER';
 
 export type AllocationPcts = {
   livingPct: number;
   safetyPct: number;
-  investingPct: number;
-  opportunityPct: number;
-  learningPct: number;
+  growthPct: number;
   funPct: number;
 };
 
-const BUCKETS: FinanceBucket[] = [
-  'LIVING',
-  'SAFETY',
+const BUCKETS: FinanceBucket[] = ['LIVING', 'SAFETY', 'GROWTH', 'FUN'];
+
+const DEFAULT_PCTS: AllocationPcts = {
+  livingPct: 50,
+  safetyPct: 15,
+  growthPct: 30,
+  funPct: 5,
+};
+
+const LEGACY_GROWTH_BUCKETS = new Set([
   'INVESTING',
   'OPPORTUNITY',
   'LEARNING',
-  'FUN',
-];
-
-const DEFAULT_PCTS: AllocationPcts = {
-  livingPct: 40,
-  safetyPct: 5,
-  investingPct: 30,
-  opportunityPct: 10,
-  learningPct: 10,
-  funPct: 5,
-};
+  'COMPOUND',
+]);
 
 const SEED_CATEGORIES: Array<{
   name: string;
@@ -62,13 +52,15 @@ const SEED_CATEGORIES: Array<{
   { name: 'Internet', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 60 },
   { name: 'Software/AI', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 70 },
   { name: 'Phone', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 80 },
+  { name: 'Hosting', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 85 },
   { name: 'Shopping', kind: 'DISCRETIONARY', defaultBucket: 'FUN', sortOrder: 90 },
   { name: 'Entertainment', kind: 'DISCRETIONARY', defaultBucket: 'FUN', sortOrder: 100 },
   { name: 'Health', kind: 'OTHER', defaultBucket: 'SAFETY', sortOrder: 110 },
-  { name: 'Education', kind: 'OTHER', defaultBucket: 'LEARNING', sortOrder: 120 },
-  { name: 'Books', kind: 'OTHER', defaultBucket: 'LEARNING', sortOrder: 125 },
-  { name: 'Courses', kind: 'OTHER', defaultBucket: 'LEARNING', sortOrder: 126 },
-  { name: 'Investing', kind: 'OTHER', defaultBucket: 'INVESTING', sortOrder: 127 },
+  { name: 'Education', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 120 },
+  { name: 'Books', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 125 },
+  { name: 'Courses', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 126 },
+  { name: 'Investing', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 127 },
+  { name: 'Product Experiment', kind: 'OTHER', defaultBucket: 'GROWTH', sortOrder: 128 },
   { name: 'Other', kind: 'OTHER', defaultBucket: 'LIVING', sortOrder: 130 },
 ];
 
@@ -80,13 +72,19 @@ function isBucket(value: string): value is FinanceBucket {
   return (BUCKETS as string[]).includes(value);
 }
 
+/** Map legacy bucket IDs into the canonical 4-bucket model. */
+export function canonicalizeBucket(value: string): FinanceBucket | null {
+  if (LEGACY_GROWTH_BUCKETS.has(value)) return 'GROWTH';
+  if (isBucket(value)) return value;
+  return null;
+}
+
 function isKind(value: string): value is ExpenseCategoryKind {
   return ['ESSENTIAL', 'FIXED', 'DISCRETIONARY', 'OTHER'].includes(value);
 }
 
 function sumPcts(pcts: AllocationPcts): number {
-  return pcts.livingPct + pcts.safetyPct + pcts.investingPct
-    + pcts.opportunityPct + pcts.learningPct + pcts.funPct;
+  return pcts.livingPct + pcts.safetyPct + pcts.growthPct + pcts.funPct;
 }
 
 /** Split integer VND by percents; remainder goes to Fun so sum == amount. */
@@ -102,40 +100,71 @@ export function allocateAmountVnd(
   }
   const living = Math.floor((amountVnd * pcts.livingPct) / 100);
   const safety = Math.floor((amountVnd * pcts.safetyPct) / 100);
-  const investing = Math.floor((amountVnd * pcts.investingPct) / 100);
-  const opportunity = Math.floor((amountVnd * pcts.opportunityPct) / 100);
-  const learning = Math.floor((amountVnd * pcts.learningPct) / 100);
-  const fun = amountVnd - living - safety - investing - opportunity - learning;
+  const growth = Math.floor((amountVnd * pcts.growthPct) / 100);
+  const fun = amountVnd - living - safety - growth;
   return [
     { bucket: 'LIVING', amountVnd: living, pctApplied: pcts.livingPct },
     { bucket: 'SAFETY', amountVnd: safety, pctApplied: pcts.safetyPct },
-    { bucket: 'INVESTING', amountVnd: investing, pctApplied: pcts.investingPct },
-    { bucket: 'OPPORTUNITY', amountVnd: opportunity, pctApplied: pcts.opportunityPct },
-    { bucket: 'LEARNING', amountVnd: learning, pctApplied: pcts.learningPct },
+    { bucket: 'GROWTH', amountVnd: growth, pctApplied: pcts.growthPct },
     { bucket: 'FUN', amountVnd: fun, pctApplied: pcts.funPct },
   ];
 }
 
-/** Rescale existing pct snapshot to a new income total. Maps legacy COMPOUND → INVESTING. */
+/** Build allocation rows from explicit per-bucket amounts (per-income override). */
+export function allocateFromAmounts(
+  amountVnd: number,
+  amounts: Partial<Record<FinanceBucket, number>>,
+): Array<{ bucket: FinanceBucket; amountVnd: number; pctApplied: number }> {
+  if (!Number.isInteger(amountVnd) || amountVnd < 0) {
+    throw financeError('amountVnd must be a non-negative integer');
+  }
+  const living = amounts.LIVING ?? 0;
+  const safety = amounts.SAFETY ?? 0;
+  const growth = amounts.GROWTH ?? 0;
+  const fun = amounts.FUN ?? 0;
+  for (const n of [living, safety, growth, fun]) {
+    if (!Number.isInteger(n) || n < 0) {
+      throw financeError('Each allocation amount must be a non-negative integer');
+    }
+  }
+  if (living + safety + growth + fun !== amountVnd) {
+    throw financeError('Allocation amounts must sum to income amount');
+  }
+  const pct = (part: number) => (amountVnd === 0 ? 0 : Math.round((part * 100) / amountVnd));
+  // Keep pcts summing sensibly; Fun absorbs pct remainder conceptually via amounts.
+  const livingPct = pct(living);
+  const safetyPct = pct(safety);
+  const growthPct = pct(growth);
+  const funPct = amountVnd === 0 ? 0 : 100 - livingPct - safetyPct - growthPct;
+  return [
+    { bucket: 'LIVING', amountVnd: living, pctApplied: livingPct },
+    { bucket: 'SAFETY', amountVnd: safety, pctApplied: safetyPct },
+    { bucket: 'GROWTH', amountVnd: growth, pctApplied: growthPct },
+    { bucket: 'FUN', amountVnd: fun, pctApplied: funPct },
+  ];
+}
+
+/**
+ * Rescale existing pct snapshot to a new income total.
+ * Maps INVESTING|OPPORTUNITY|LEARNING|COMPOUND → GROWTH (summing pcts).
+ */
 export function rescaleAllocations(
   amountVnd: number,
   previous: Array<{ bucket: string; pctApplied: number }>,
 ): Array<{ bucket: FinanceBucket; amountVnd: number; pctApplied: number }> {
   const byBucket: Partial<Record<FinanceBucket, number>> = {};
   for (const p of previous) {
-    const key = p.bucket === 'COMPOUND' ? 'INVESTING' : p.bucket;
-    if (isBucket(key)) byBucket[key] = p.pctApplied;
+    const key = canonicalizeBucket(p.bucket);
+    if (!key) continue;
+    byBucket[key] = (byBucket[key] ?? 0) + p.pctApplied;
   }
   const pcts: AllocationPcts = {
     livingPct: byBucket.LIVING ?? 0,
     safetyPct: byBucket.SAFETY ?? 0,
-    investingPct: byBucket.INVESTING ?? 0,
-    opportunityPct: byBucket.OPPORTUNITY ?? 0,
-    learningPct: byBucket.LEARNING ?? 0,
+    growthPct: byBucket.GROWTH ?? 0,
     funPct: byBucket.FUN ?? 0,
   };
   if (sumPcts(pcts) !== 100) {
-    // Incomplete legacy snapshot — fall back to current policy defaults.
     return allocateAmountVnd(amountVnd, DEFAULT_PCTS);
   }
   return allocateAmountVnd(amountVnd, pcts);
@@ -170,9 +199,7 @@ function emptyBuckets(): BucketTotals {
   return {
     LIVING: 0,
     SAFETY: 0,
-    INVESTING: 0,
-    OPPORTUNITY: 0,
-    LEARNING: 0,
+    GROWTH: 0,
     FUN: 0,
   };
 }
@@ -277,9 +304,7 @@ export class FinanceService {
     for (const n of [
       input.livingPct,
       input.safetyPct,
-      input.investingPct,
-      input.opportunityPct,
-      input.learningPct,
+      input.growthPct,
       input.funPct,
     ]) {
       if (!Number.isInteger(n) || n < 0 || n > 100) {
@@ -292,9 +317,7 @@ export class FinanceService {
       .set({
         livingPct: input.livingPct,
         safetyPct: input.safetyPct,
-        investingPct: input.investingPct,
-        opportunityPct: input.opportunityPct,
-        learningPct: input.learningPct,
+        growthPct: input.growthPct,
         funPct: input.funPct,
         currency: input.currency ?? row.currency,
         revision: row.revision + 1,
@@ -390,7 +413,14 @@ export class FinanceService {
 
   async createIncomeEntry(
     userId: string,
-    input: { sourceId: string; amountVnd: number; receivedAt?: string; note?: string },
+    input: {
+      sourceId: string;
+      amountVnd: number;
+      receivedAt?: string;
+      note?: string;
+      /** Optional per-income override; must sum to amountVnd. Does not change settings. */
+      allocations?: Array<{ bucket: FinanceBucket; amountVnd: number }>;
+    },
   ) {
     await this.requireSource(userId, input.sourceId);
     if (!Number.isInteger(input.amountVnd) || input.amountVnd < 0) {
@@ -399,14 +429,23 @@ export class FinanceService {
     const settings = await this.ensureSettings(userId);
     const receivedAt = input.receivedAt?.trim() || todayInHoChiMinh();
     this.assertDate(receivedAt);
-    const allocations = allocateAmountVnd(input.amountVnd, {
-      livingPct: settings.livingPct,
-      safetyPct: settings.safetyPct,
-      investingPct: settings.investingPct,
-      opportunityPct: settings.opportunityPct,
-      learningPct: settings.learningPct,
-      funPct: settings.funPct,
-    });
+
+    let allocations: Array<{ bucket: FinanceBucket; amountVnd: number; pctApplied: number }>;
+    if (input.allocations) {
+      const amounts: Partial<Record<FinanceBucket, number>> = {};
+      for (const row of input.allocations) {
+        if (!isBucket(row.bucket)) throw financeError(`Invalid bucket: ${row.bucket}`);
+        amounts[row.bucket] = (amounts[row.bucket] ?? 0) + row.amountVnd;
+      }
+      allocations = allocateFromAmounts(input.amountVnd, amounts);
+    } else {
+      allocations = allocateAmountVnd(input.amountVnd, {
+        livingPct: settings.livingPct,
+        safetyPct: settings.safetyPct,
+        growthPct: settings.growthPct,
+        funPct: settings.funPct,
+      });
+    }
     const id = randomUUID();
     const now = new Date();
 
@@ -486,11 +525,13 @@ export class FinanceService {
           })),
         );
         const now = new Date();
+        const usedIds = new Set<string>();
         for (const a of rescaled) {
           const match = existing.find((e) =>
-            e.bucket === a.bucket || (e.bucket === 'COMPOUND' && a.bucket === 'INVESTING'),
+            !usedIds.has(e.id) && canonicalizeBucket(e.bucket) === a.bucket,
           );
           if (match) {
+            usedIds.add(match.id);
             await tx
               .update(financeIncomeAllocations)
               .set({
@@ -513,6 +554,14 @@ export class FinanceService {
               updatedAt: now,
               deletedAt: null,
             });
+          }
+        }
+        for (const e of existing) {
+          if (!usedIds.has(e.id)) {
+            await tx
+              .update(financeIncomeAllocations)
+              .set({ deletedAt: now, updatedAt: now })
+              .where(eq(financeIncomeAllocations.id, e.id));
           }
         }
       }
@@ -668,8 +717,9 @@ export class FinanceService {
     if (!Number.isInteger(input.amountVnd) || input.amountVnd < 0) {
       throw financeError('amountVnd must be a non-negative integer');
     }
-    const fundingBucket = input.fundingBucket ?? (category.defaultBucket as FinanceBucket);
-    if (!isBucket(fundingBucket)) throw financeError('Invalid funding bucket');
+    const rawBucket = input.fundingBucket ?? category.defaultBucket;
+    const fundingBucket = canonicalizeBucket(rawBucket);
+    if (!fundingBucket) throw financeError('Invalid funding bucket');
     const spentAt = input.spentAt?.trim() || todayInHoChiMinh();
     this.assertDate(spentAt);
     const settings = await this.ensureSettings(userId);
@@ -1078,30 +1128,31 @@ export class FinanceService {
 
     const allocated = emptyBuckets();
     for (const row of allocations) {
-      const b = row.alloc.bucket as FinanceBucket;
-      if (isBucket(b)) allocated[b] += row.alloc.amountVnd;
+      const b = canonicalizeBucket(row.alloc.bucket);
+      if (b) allocated[b] += row.alloc.amountVnd;
     }
 
     const spentFrom = emptyBuckets();
     for (const row of expenses) {
-      const b = row.entry.fundingBucket as FinanceBucket;
-      if (isBucket(b)) spentFrom[b] += row.entry.amountVnd;
+      const b = canonicalizeBucket(row.entry.fundingBucket);
+      if (b) spentFrom[b] += row.entry.amountVnd;
     }
     spentFrom.LIVING += debtPaid;
 
     const lifetimeAllocated = emptyBuckets();
     for (const row of allAllocations) {
-      const b = row.bucket as FinanceBucket;
-      if (isBucket(b)) lifetimeAllocated[b] += row.amountVnd;
+      const b = canonicalizeBucket(row.bucket);
+      if (b) lifetimeAllocated[b] += row.amountVnd;
     }
     const lifetimeSpent = emptyBuckets();
     for (const row of allExpenses) {
-      const b = row.fundingBucket as FinanceBucket;
-      if (isBucket(b)) lifetimeSpent[b] += row.amountVnd;
+      const b = canonicalizeBucket(row.fundingBucket);
+      if (b) lifetimeSpent[b] += row.amountVnd;
     }
     lifetimeSpent.LIVING += allPayments.reduce((s, p) => s + p.amountVnd, 0);
 
     const byCategoryMap = new Map<string, { categoryId: string; name: string; amountVnd: number }>();
+    const growthByCategoryMap = new Map<string, { categoryId: string; name: string; amountVnd: number }>();
     for (const row of expenses) {
       const key = row.entry.categoryId;
       const cur = byCategoryMap.get(key) ?? {
@@ -1111,11 +1162,28 @@ export class FinanceService {
       };
       cur.amountVnd += row.entry.amountVnd;
       byCategoryMap.set(key, cur);
+
+      if (canonicalizeBucket(row.entry.fundingBucket) === 'GROWTH') {
+        const g = growthByCategoryMap.get(key) ?? {
+          categoryId: key,
+          name: row.categoryName,
+          amountVnd: 0,
+        };
+        g.amountVnd += row.entry.amountVnd;
+        growthByCategoryMap.set(key, g);
+      }
     }
 
     const prevIncome = prevIncomes.reduce((s, r) => s + r.amountVnd, 0);
     const prevSpending = prevExpenses.reduce((s, r) => s + r.amountVnd, 0);
     const prevDebtPaid = prevPayments.reduce((s, r) => s + r.amountVnd, 0);
+
+    const targetPct: Record<FinanceBucket, number> = {
+      LIVING: settings.livingPct,
+      SAFETY: settings.safetyPct,
+      GROWTH: settings.growthPct,
+      FUN: settings.funPct,
+    };
 
     const buckets = BUCKETS.map((bucket) => {
       const alloc = allocated[bucket];
@@ -1126,6 +1194,7 @@ export class FinanceService {
         spentVnd: spent,
         remainingVnd: alloc - spent,
         pctOfIncome: income > 0 ? Math.round((alloc * 1000) / income) / 10 : 0,
+        targetPct: targetPct[bucket],
         lifetimeBalanceVnd: lifetimeAllocated[bucket] - lifetimeSpent[bucket],
       };
     });
@@ -1144,16 +1213,11 @@ export class FinanceService {
       deficitVnd: Math.min(0, income - monthlyRequired),
       showDeficit: income < monthlyRequired,
       allocationRatePct: income > 0
-        ? Math.round(((
-          allocated.SAFETY
-          + allocated.INVESTING
-          + allocated.OPPORTUNITY
-          + allocated.LEARNING
-          + allocated.FUN
-        ) * 1000) / income) / 10
+        ? Math.round(((allocated.SAFETY + allocated.GROWTH + allocated.FUN) * 1000) / income) / 10
         : 0,
       buckets,
       spendingByCategory: [...byCategoryMap.values()].sort((a, b) => b.amountVnd - a.amountVnd),
+      growthSpendingByCategory: [...growthByCategoryMap.values()].sort((a, b) => b.amountVnd - a.amountVnd),
       previousMonth: {
         month: prevMonth,
         incomeVnd: prevIncome,
@@ -1321,9 +1385,7 @@ export class FinanceService {
       id: row.id,
       livingPct: row.livingPct,
       safetyPct: row.safetyPct,
-      investingPct: row.investingPct,
-      opportunityPct: row.opportunityPct,
-      learningPct: row.learningPct,
+      growthPct: row.growthPct,
       funPct: row.funPct,
       currency: row.currency,
       revision: row.revision,
