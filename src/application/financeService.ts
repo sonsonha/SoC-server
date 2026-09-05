@@ -138,26 +138,38 @@ export class FinanceService {
       ))
       .limit(1);
     if (existing[0]) return existing[0];
+
     const id = randomUUID();
     const now = new Date();
-    await this.db.insert(financeAllocationSettings).values({
-      id,
-      userId,
-      livingPct: 55,
-      safetyPct: 15,
-      compoundPct: 20,
-      opportunityPct: 10,
-      currency: 'VND',
-      revision: 1,
-      updatedAt: now,
-      deletedAt: null,
-    });
+    // Parallel bootstrap (summary + sources + …) can race; ignore duplicate user_id.
+    await this.db
+      .insert(financeAllocationSettings)
+      .values({
+        id,
+        userId,
+        livingPct: 55,
+        safetyPct: 15,
+        compoundPct: 20,
+        opportunityPct: 10,
+        currency: 'VND',
+        revision: 1,
+        updatedAt: now,
+        deletedAt: null,
+      })
+      .onConflictDoNothing({ target: financeAllocationSettings.userId });
+
     const rows = await this.db
       .select()
       .from(financeAllocationSettings)
-      .where(eq(financeAllocationSettings.id, id))
+      .where(and(
+        eq(financeAllocationSettings.userId, userId),
+        isNull(financeAllocationSettings.deletedAt),
+      ))
       .limit(1);
-    return rows[0]!;
+    if (!rows[0]) {
+      throw financeError('Could not initialize finance settings', 500, 'INTERNAL');
+    }
+    return rows[0];
   }
 
   async ensureSeedCategories(userId: string) {
@@ -170,22 +182,29 @@ export class FinanceService {
       ))
       .limit(1);
     if (existing[0]) return;
+
     const now = new Date();
-    await this.db.insert(financeExpenseCategories).values(
-      SEED_CATEGORIES.map((cat) => ({
-        id: randomUUID(),
-        userId,
-        name: cat.name,
-        kind: cat.kind,
-        defaultBucket: cat.defaultBucket,
-        active: true,
-        sortOrder: cat.sortOrder,
-        isSystem: true,
-        revision: 1,
-        updatedAt: now,
-        deletedAt: null,
-      })),
-    );
+    try {
+      await this.db.insert(financeExpenseCategories).values(
+        SEED_CATEGORIES.map((cat) => ({
+          id: randomUUID(),
+          userId,
+          name: cat.name,
+          kind: cat.kind,
+          defaultBucket: cat.defaultBucket,
+          active: true,
+          sortOrder: cat.sortOrder,
+          isSystem: true,
+          revision: 1,
+          updatedAt: now,
+          deletedAt: null,
+        })),
+      );
+    } catch (err) {
+      // Concurrent seed from parallel requests — another insert already won.
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/duplicate key|unique constraint/i.test(message)) throw err;
+    }
   }
 
   // ── Settings ──────────────────────────────────────────────
