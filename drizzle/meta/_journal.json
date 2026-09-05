@@ -169,6 +169,13 @@
       "when": 1720000023000,
       "tag": "0025_finance_v1",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1720000024000,
+      "tag": "0026_finance_six_buckets",
+      "breakpoints": true
     }
   ]
 }

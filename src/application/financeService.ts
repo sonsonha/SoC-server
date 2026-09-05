@@ -12,10 +12,41 @@ import {
   financeIncomeSources,
 } from '../infrastructure/db/schema/index.js';
 
-export type FinanceBucket = 'LIVING' | 'SAFETY' | 'COMPOUND' | 'OPPORTUNITY';
+export type FinanceBucket =
+  | 'LIVING'
+  | 'SAFETY'
+  | 'INVESTING'
+  | 'OPPORTUNITY'
+  | 'LEARNING'
+  | 'FUN';
 export type ExpenseCategoryKind = 'ESSENTIAL' | 'FIXED' | 'DISCRETIONARY' | 'OTHER';
 
-const BUCKETS: FinanceBucket[] = ['LIVING', 'SAFETY', 'COMPOUND', 'OPPORTUNITY'];
+export type AllocationPcts = {
+  livingPct: number;
+  safetyPct: number;
+  investingPct: number;
+  opportunityPct: number;
+  learningPct: number;
+  funPct: number;
+};
+
+const BUCKETS: FinanceBucket[] = [
+  'LIVING',
+  'SAFETY',
+  'INVESTING',
+  'OPPORTUNITY',
+  'LEARNING',
+  'FUN',
+];
+
+const DEFAULT_PCTS: AllocationPcts = {
+  livingPct: 40,
+  safetyPct: 5,
+  investingPct: 30,
+  opportunityPct: 10,
+  learningPct: 10,
+  funPct: 5,
+};
 
 const SEED_CATEGORIES: Array<{
   name: string;
@@ -31,10 +62,13 @@ const SEED_CATEGORIES: Array<{
   { name: 'Internet', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 60 },
   { name: 'Software/AI', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 70 },
   { name: 'Phone', kind: 'FIXED', defaultBucket: 'LIVING', sortOrder: 80 },
-  { name: 'Shopping', kind: 'DISCRETIONARY', defaultBucket: 'OPPORTUNITY', sortOrder: 90 },
-  { name: 'Entertainment', kind: 'DISCRETIONARY', defaultBucket: 'OPPORTUNITY', sortOrder: 100 },
+  { name: 'Shopping', kind: 'DISCRETIONARY', defaultBucket: 'FUN', sortOrder: 90 },
+  { name: 'Entertainment', kind: 'DISCRETIONARY', defaultBucket: 'FUN', sortOrder: 100 },
   { name: 'Health', kind: 'OTHER', defaultBucket: 'SAFETY', sortOrder: 110 },
-  { name: 'Education', kind: 'OTHER', defaultBucket: 'OPPORTUNITY', sortOrder: 120 },
+  { name: 'Education', kind: 'OTHER', defaultBucket: 'LEARNING', sortOrder: 120 },
+  { name: 'Books', kind: 'OTHER', defaultBucket: 'LEARNING', sortOrder: 125 },
+  { name: 'Courses', kind: 'OTHER', defaultBucket: 'LEARNING', sortOrder: 126 },
+  { name: 'Investing', kind: 'OTHER', defaultBucket: 'INVESTING', sortOrder: 127 },
   { name: 'Other', kind: 'OTHER', defaultBucket: 'LIVING', sortOrder: 130 },
 ];
 
@@ -50,45 +84,61 @@ function isKind(value: string): value is ExpenseCategoryKind {
   return ['ESSENTIAL', 'FIXED', 'DISCRETIONARY', 'OTHER'].includes(value);
 }
 
-/** Split integer VND by percents; remainder goes to Opportunity so sum == amount. */
+function sumPcts(pcts: AllocationPcts): number {
+  return pcts.livingPct + pcts.safetyPct + pcts.investingPct
+    + pcts.opportunityPct + pcts.learningPct + pcts.funPct;
+}
+
+/** Split integer VND by percents; remainder goes to Fun so sum == amount. */
 export function allocateAmountVnd(
   amountVnd: number,
-  pcts: { livingPct: number; safetyPct: number; compoundPct: number; opportunityPct: number },
+  pcts: AllocationPcts,
 ): Array<{ bucket: FinanceBucket; amountVnd: number; pctApplied: number }> {
   if (!Number.isInteger(amountVnd) || amountVnd < 0) {
     throw financeError('amountVnd must be a non-negative integer');
   }
-  const sumPct = pcts.livingPct + pcts.safetyPct + pcts.compoundPct + pcts.opportunityPct;
-  if (sumPct !== 100) {
+  if (sumPcts(pcts) !== 100) {
     throw financeError('Allocation percentages must sum to 100');
   }
   const living = Math.floor((amountVnd * pcts.livingPct) / 100);
   const safety = Math.floor((amountVnd * pcts.safetyPct) / 100);
-  const compound = Math.floor((amountVnd * pcts.compoundPct) / 100);
-  const opportunity = amountVnd - living - safety - compound;
+  const investing = Math.floor((amountVnd * pcts.investingPct) / 100);
+  const opportunity = Math.floor((amountVnd * pcts.opportunityPct) / 100);
+  const learning = Math.floor((amountVnd * pcts.learningPct) / 100);
+  const fun = amountVnd - living - safety - investing - opportunity - learning;
   return [
     { bucket: 'LIVING', amountVnd: living, pctApplied: pcts.livingPct },
     { bucket: 'SAFETY', amountVnd: safety, pctApplied: pcts.safetyPct },
-    { bucket: 'COMPOUND', amountVnd: compound, pctApplied: pcts.compoundPct },
+    { bucket: 'INVESTING', amountVnd: investing, pctApplied: pcts.investingPct },
     { bucket: 'OPPORTUNITY', amountVnd: opportunity, pctApplied: pcts.opportunityPct },
+    { bucket: 'LEARNING', amountVnd: learning, pctApplied: pcts.learningPct },
+    { bucket: 'FUN', amountVnd: fun, pctApplied: pcts.funPct },
   ];
 }
 
-/** Rescale existing pct snapshot to a new income total. */
+/** Rescale existing pct snapshot to a new income total. Maps legacy COMPOUND → INVESTING. */
 export function rescaleAllocations(
   amountVnd: number,
-  previous: Array<{ bucket: FinanceBucket; pctApplied: number }>,
+  previous: Array<{ bucket: string; pctApplied: number }>,
 ): Array<{ bucket: FinanceBucket; amountVnd: number; pctApplied: number }> {
-  const byBucket = Object.fromEntries(previous.map((p) => [p.bucket, p.pctApplied])) as Record<
-    FinanceBucket,
-    number
-  >;
-  return allocateAmountVnd(amountVnd, {
+  const byBucket: Partial<Record<FinanceBucket, number>> = {};
+  for (const p of previous) {
+    const key = p.bucket === 'COMPOUND' ? 'INVESTING' : p.bucket;
+    if (isBucket(key)) byBucket[key] = p.pctApplied;
+  }
+  const pcts: AllocationPcts = {
     livingPct: byBucket.LIVING ?? 0,
     safetyPct: byBucket.SAFETY ?? 0,
-    compoundPct: byBucket.COMPOUND ?? 0,
+    investingPct: byBucket.INVESTING ?? 0,
     opportunityPct: byBucket.OPPORTUNITY ?? 0,
-  });
+    learningPct: byBucket.LEARNING ?? 0,
+    funPct: byBucket.FUN ?? 0,
+  };
+  if (sumPcts(pcts) !== 100) {
+    // Incomplete legacy snapshot — fall back to current policy defaults.
+    return allocateAmountVnd(amountVnd, DEFAULT_PCTS);
+  }
+  return allocateAmountVnd(amountVnd, pcts);
 }
 
 export function monthBounds(month: string): { start: string; end: string; prevMonth: string } {
@@ -117,7 +167,14 @@ export function todayInHoChiMinh(): string {
 type BucketTotals = Record<FinanceBucket, number>;
 
 function emptyBuckets(): BucketTotals {
-  return { LIVING: 0, SAFETY: 0, COMPOUND: 0, OPPORTUNITY: 0 };
+  return {
+    LIVING: 0,
+    SAFETY: 0,
+    INVESTING: 0,
+    OPPORTUNITY: 0,
+    LEARNING: 0,
+    FUN: 0,
+  };
 }
 
 export class FinanceService {
@@ -147,10 +204,7 @@ export class FinanceService {
       .values({
         id,
         userId,
-        livingPct: 55,
-        safetyPct: 15,
-        compoundPct: 20,
-        opportunityPct: 10,
+        ...DEFAULT_PCTS,
         currency: 'VND',
         revision: 1,
         updatedAt: now,
@@ -217,17 +271,17 @@ export class FinanceService {
 
   async updateAllocationSettings(
     userId: string,
-    input: {
-      livingPct: number;
-      safetyPct: number;
-      compoundPct: number;
-      opportunityPct: number;
-      currency?: string;
-    },
+    input: AllocationPcts & { currency?: string },
   ) {
-    const sum = input.livingPct + input.safetyPct + input.compoundPct + input.opportunityPct;
-    if (sum !== 100) throw financeError('Allocation percentages must sum to 100');
-    for (const n of [input.livingPct, input.safetyPct, input.compoundPct, input.opportunityPct]) {
+    if (sumPcts(input) !== 100) throw financeError('Allocation percentages must sum to 100');
+    for (const n of [
+      input.livingPct,
+      input.safetyPct,
+      input.investingPct,
+      input.opportunityPct,
+      input.learningPct,
+      input.funPct,
+    ]) {
       if (!Number.isInteger(n) || n < 0 || n > 100) {
         throw financeError('Each percentage must be an integer 0–100');
       }
@@ -238,8 +292,10 @@ export class FinanceService {
       .set({
         livingPct: input.livingPct,
         safetyPct: input.safetyPct,
-        compoundPct: input.compoundPct,
+        investingPct: input.investingPct,
         opportunityPct: input.opportunityPct,
+        learningPct: input.learningPct,
+        funPct: input.funPct,
         currency: input.currency ?? row.currency,
         revision: row.revision + 1,
         updatedAt: new Date(),
@@ -343,7 +399,14 @@ export class FinanceService {
     const settings = await this.ensureSettings(userId);
     const receivedAt = input.receivedAt?.trim() || todayInHoChiMinh();
     this.assertDate(receivedAt);
-    const allocations = allocateAmountVnd(input.amountVnd, settings);
+    const allocations = allocateAmountVnd(input.amountVnd, {
+      livingPct: settings.livingPct,
+      safetyPct: settings.safetyPct,
+      investingPct: settings.investingPct,
+      opportunityPct: settings.opportunityPct,
+      learningPct: settings.learningPct,
+      funPct: settings.funPct,
+    });
     const id = randomUUID();
     const now = new Date();
 
@@ -418,22 +481,38 @@ export class FinanceService {
         const rescaled = rescaleAllocations(
           nextAmount,
           existing.map((e) => ({
-            bucket: e.bucket as FinanceBucket,
+            bucket: e.bucket,
             pctApplied: e.pctApplied,
           })),
         );
         const now = new Date();
         for (const a of rescaled) {
-          const match = existing.find((e) => e.bucket === a.bucket);
+          const match = existing.find((e) =>
+            e.bucket === a.bucket || (e.bucket === 'COMPOUND' && a.bucket === 'INVESTING'),
+          );
           if (match) {
             await tx
               .update(financeIncomeAllocations)
               .set({
+                bucket: a.bucket,
                 amountVnd: a.amountVnd,
+                pctApplied: a.pctApplied,
                 revision: match.revision + 1,
                 updatedAt: now,
               })
               .where(eq(financeIncomeAllocations.id, match.id));
+          } else {
+            await tx.insert(financeIncomeAllocations).values({
+              id: randomUUID(),
+              userId,
+              incomeEntryId: id,
+              bucket: a.bucket,
+              amountVnd: a.amountVnd,
+              pctApplied: a.pctApplied,
+              revision: 1,
+              updatedAt: now,
+              deletedAt: null,
+            });
           }
         }
       }
@@ -1065,7 +1144,13 @@ export class FinanceService {
       deficitVnd: Math.min(0, income - monthlyRequired),
       showDeficit: income < monthlyRequired,
       allocationRatePct: income > 0
-        ? Math.round(((allocated.SAFETY + allocated.COMPOUND + allocated.OPPORTUNITY) * 1000) / income) / 10
+        ? Math.round(((
+          allocated.SAFETY
+          + allocated.INVESTING
+          + allocated.OPPORTUNITY
+          + allocated.LEARNING
+          + allocated.FUN
+        ) * 1000) / income) / 10
         : 0,
       buckets,
       spendingByCategory: [...byCategoryMap.values()].sort((a, b) => b.amountVnd - a.amountVnd),
@@ -1236,8 +1321,10 @@ export class FinanceService {
       id: row.id,
       livingPct: row.livingPct,
       safetyPct: row.safetyPct,
-      compoundPct: row.compoundPct,
+      investingPct: row.investingPct,
       opportunityPct: row.opportunityPct,
+      learningPct: row.learningPct,
+      funPct: row.funPct,
       currency: row.currency,
       revision: row.revision,
       updatedAt: row.updatedAt.toISOString(),
