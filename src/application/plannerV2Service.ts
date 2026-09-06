@@ -220,6 +220,7 @@ type PatchTimeBlockInput = Partial<CreateTimeBlockInput> & {
 };
 
 export type ProjectType = 'STANDARD' | 'HABIT';
+export type ProjectContext = 'PERSONAL' | 'WORK';
 
 type CreateProjectInput = {
   title: string;
@@ -231,6 +232,7 @@ type CreateProjectInput = {
   active?: boolean;
   targetDate?: string | null;
   projectType?: ProjectType;
+  projectContext?: ProjectContext;
 };
 
 type PatchProjectInput = Partial<CreateProjectInput>;
@@ -270,6 +272,10 @@ type RepeatRangeInput = {
 
 function projectTypeFromDb(value: string | null | undefined): ProjectType {
   return value === 'HABIT' ? 'HABIT' : 'STANDARD';
+}
+
+function projectContextFromDb(value: string | null | undefined): ProjectContext {
+  return value === 'WORK' ? 'WORK' : 'PERSONAL';
 }
 
 /** Approximate Monday 00:00 UTC+7 for WEEK dueAt anchors (matches product week). */
@@ -1340,6 +1346,7 @@ export class PlannerV2Service {
       description: input.description ?? '',
       targetDate: input.targetDate ?? null,
       projectType: input.projectType === 'HABIT' ? 'HABIT' : 'STANDARD',
+      projectContext: input.projectContext === 'WORK' ? 'WORK' : 'PERSONAL',
       active: input.active ?? true,
       revision: 1,
       updatedAt: now,
@@ -1374,6 +1381,9 @@ export class PlannerV2Service {
         projectType: input.projectType === undefined
           ? row.projectType
           : input.projectType === 'HABIT' ? 'HABIT' : 'STANDARD',
+        projectContext: input.projectContext === undefined
+          ? row.projectContext
+          : input.projectContext === 'WORK' ? 'WORK' : 'PERSONAL',
         active: input.active ?? row.active,
         revision: row.revision + 1,
         updatedAt: new Date(),
@@ -1778,6 +1788,7 @@ export class PlannerV2Service {
       description: row.description,
       targetDate: row.targetDate,
       projectType: projectTypeFromDb(row.projectType),
+      projectContext: projectContextFromDb(row.projectContext),
       active: row.active,
       revision: row.revision,
     };

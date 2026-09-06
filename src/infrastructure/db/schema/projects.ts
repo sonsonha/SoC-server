@@ -18,6 +18,8 @@ export const projects = pgTable(
   targetDate: text('target_date'),
   /** STANDARD = finite work; HABIT = repeated/ongoing behavior (same Project model). */
   projectType: text('project_type').notNull().default('STANDARD'),
+  /** PERSONAL = personal OS work; WORK = employment projects (not personal Goals). */
+  projectContext: text('project_context').notNull().default('PERSONAL'),
   active: boolean('active').notNull().default(true),
   ...syncColumns,
   },
@@ -25,5 +27,6 @@ export const projects = pgTable(
     index('projects_user_id_idx').on(t.userId),
     index('projects_user_id_goal_id_idx').on(t.userId, t.goalId),
     index('projects_user_id_project_type_idx').on(t.userId, t.projectType),
+    index('projects_user_id_project_context_idx').on(t.userId, t.projectContext),
   ],
 );

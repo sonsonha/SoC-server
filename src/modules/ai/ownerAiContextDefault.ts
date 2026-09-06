@@ -93,11 +93,16 @@ but NOT as personal Goals by default.
 WORK-HOURS BOUNDARY
 ==================================================
 
-Tasks belonging to current employment / work projects should normally be done
-during working hours.
+Normal work hours:
+
+Monday–Friday
+10:00–18:00
+
+Tasks belonging to current employment / work projects should preferentially be
+planned inside these work hours.
 
 Preferred rule:
-Work Task → schedule during normal work hours.
+Work Task → schedule during Mon–Fri 10:00–18:00.
 
 Personal / off-hours should NOT automatically be consumed by work.
 
@@ -123,7 +128,12 @@ aggressively with the two FOCUS Goals.
 
 Prefer broad, low-administration maintenance areas.
 
-### Health
+Current seeded MAINTAIN Goals:
+- Maintain Good Health
+- Continuous Learning & Intellectual Development
+- Maintain Personal Financial Awareness & Control
+
+### Health (Maintain Good Health)
 
 Treat Health broadly. It includes:
 - physical health
@@ -141,49 +151,43 @@ Do NOT unnecessarily create separate Goals such as:
 - Improve health
 
 when one broader Health maintenance Goal is sufficient.
-Habit Projects may exist underneath Health when appropriate.
 
-### Reading / Intellectual Development
+Seeded Habit Projects under Health:
+- Exercise & Movement — intended direction: 3 sessions/week
+- Sleep Routine
 
-Maintain regular reading and intellectual development:
-- books
-- thoughtful long-form reading
-- broader knowledge outside immediate job requirements
+Sleep targets:
+- Current operational target (judge against this now): bedtime 22:30 / wake 06:00
+- Official long-term target: bedtime 22:00 / wake 05:00
 
-Keep this lightweight.
+Future sleep tracking (NOT implemented yet) should use Session/checkpoint
+completion timestamps and separately measure:
+1. bedtime lateness trend
+2. wake-up lateness trend
+3. combined sleep-discipline trend
 
-### Continuous Professional Learning
+Do not collapse sleep into one opaque score.
 
-Continue improving professional / technical capability even outside immediate
-interview Tasks.
+### Continuous Learning & Intellectual Development
 
-Examples:
+Maintain continuous intellectual and professional development beyond only
+short-term interview preparation.
+
+Includes when relevant:
+- books / long-form reading
 - software engineering fundamentals
-- databases
-- systems
-- backend engineering
-- AI
-- robotics
-- applied engineering
-- new engineering concepts
+- databases / systems / backend
+- AI / robotics / applied engineering
+- broader intellectual knowledge
+
+Seeded Habit Projects:
+- Reading
+- Professional Learning
 
 Do NOT turn every technology being studied into a Goal.
-Prefer Projects [Habit], Tasks, or learning sessions under a broader
-maintenance direction.
+No separate News Project unless the user later asks for structured execution.
 
-### General Awareness / News
-
-Maintain reasonable awareness of:
-- technology
-- business / economics where relevant
-- important current developments
-- professional / industry developments
-
-Keep this lightweight.
-Do NOT create a high-frequency productivity ritual unless the user explicitly
-requests one.
-
-### Personal Finance
+### Personal Finance (Maintain Personal Financial Awareness & Control)
 
 Maintain basic personal financial awareness and discipline:
 - record income / expenses
@@ -191,8 +195,22 @@ Maintain basic personal financial awareness and discipline:
 - monthly spending review
 - allocation / budget review
 
-These are usually repeated Tasks / Habit Project behavior, not separate Goals
-for every financial action.
+Seeded Habit Project:
+- Financial Tracking & Review
+
+Income is typically recorded only ~1–2 times/month.
+Spending is more frequent.
+Do NOT require daily income entries.
+
+Future Finance freshness heuristic (confirmed stale threshold: 5 days):
+lastFinanceActivity = max(lastExpenseRecordedAt, lastFinanceReviewAt)
+If older than 5 days → surface "Finance tracking may be stale — check Finance."
+This is a reminder heuristic, not proof that spending was forgotten.
+
+### General Awareness / News
+
+Maintain reasonable awareness of technology, business/economics where relevant,
+and important professional developments — lightweight and opportunistic for now.
 
 ==================================================
 EDUCATION / SCHOLARSHIP OPPORTUNITIES
@@ -368,22 +386,45 @@ CURRENT SUMMARY
 ==================================================
 
 FOCUS
-- Obtain a strong Software Engineer / Backend-focused job
-- Achieve IELTS 7.0
+- Obtain a strong Software Engineer / Backend-focused job (target 2026-11-01)
+- Achieve IELTS 7.0 (planning deadline 2027-05-31 ≈ May 2027 exam window)
 
 MAINTAIN
-- Health
-- Reading / Intellectual Development
-- Continuous Professional Learning
-- Personal Finance
-- General Awareness
+- Maintain Good Health
+- Continuous Learning & Intellectual Development
+- Maintain Personal Financial Awareness & Control
 
 EXPLORE
-- Education / scholarship opportunities
-- broader professional networking / soft skills
-- broader technical interests
-- hobbies
-- practical life skills
+- Education & Opportunity Exploration
+
+WORK (unlinked Projects, not Goals)
+- Landfill Rover
+- Drone / Remote ID
+- Prefer Mon–Fri 10:00–18:00
+
+PERSONAL (unlinked Habit)
+- Personal OS Review & Planning
+  Future Daily Review: normal 15–20 min / minimum viable 1–5 min
+  Future Weekly Review: normal 30–60 min / minimum viable ~10 min
+  Consistency first; difficulty later. Do not create these Tasks yet.
+
+PERSONAL CAPACITY (context only — not a quota to fill)
+- Mon–Fri ≈ 2 hours/day personal Focus/development capacity
+- Sat–Sun ≈ 3 hours/day
+- Conceptual ceiling ≈ 16 hours/week
+- Do NOT automatically allocate all capacity
+- Task/Calendar scheduling comes later after visual review of Goals/Projects
+
+PROGRESS PHILOSOPHY
+- OUTCOME = what happened in the real world
+- EXECUTION / PROGRESS = how well the plan was followed with meaningful evidence
+- Deadline missed ≠ personal failure
+- Example: Job target date passes with no offer, but quality applications and
+  interview practice were consistent → review strategy/pipeline/capacity/timeline,
+  not shame
+- Concrete short-term outputs matter (e.g. 3/4 quality applications may still be
+  useful execution; 0/4 despite time passing is a clear execution problem)
+- Do not let generic "hours spent" hide absence of concrete output
 
 WORK CONTEXT, NOT PERSONAL GOALS
 - Landfill Rover

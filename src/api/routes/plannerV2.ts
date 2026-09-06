@@ -46,6 +46,7 @@ const createProjectSchema = z.object({
   active: z.boolean().optional(),
   targetDate: z.string().max(32).nullable().optional(),
   projectType: z.enum(['STANDARD', 'HABIT']).optional(),
+  projectContext: z.enum(['PERSONAL', 'WORK']).optional(),
 });
 
 const repeatRangeSchema = z.object({

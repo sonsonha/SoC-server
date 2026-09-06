@@ -12,6 +12,7 @@
     "seed": "tsx scripts/seed-from-bootstrap.ts",
     "seed:v2-goal-demo": "tsx scripts/seed-v2-goal-demo.ts",
     "seed:v2-goal-demo:reset": "tsx scripts/seed-v2-goal-demo.ts --reset",
+    "seed:owner-real-plan": "tsx scripts/seed-owner-real-plan.ts",
     "planner:backfill-owner": "node dist/scripts/backfill-planner-owner.js",
     "planner:verify-ownership": "node dist/scripts/verify-planner-ownership.js",
     "planner:enforce-ownership-not-null": "node dist/scripts/enforce-planner-ownership-not-null.js",
