@@ -55,6 +55,7 @@ const GOAL_SPECS: GoalSpec[] = [
     title: 'Obtain a strong Software Engineer / Backend-focused job',
     aliases: [
       'obtain a strong software engineer backend focused job',
+      'obtain a backend developer job by 2026 11 01',
       'get a backend developer job',
       'get a backend focused software engineer job',
       'backend job',
@@ -197,6 +198,7 @@ const PROJECT_SPECS: ProjectSpec[] = [
     title: 'Targeted Job Search & Interview Pipeline',
     aliases: [
       'targeted job search interview pipeline',
+      'job search application pipeline',
       'job applications',
       'job search',
       'interview pipeline',
