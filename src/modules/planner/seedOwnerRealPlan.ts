@@ -94,8 +94,17 @@ const GOAL_SPECS: GoalSpec[] = [
     outcome: 'Achieve IELTS Overall Band 7.0.',
     why:
       'Planning deadline representing Achieve/take IELTS 7.0 within May 2027. Not necessarily the booked exam date — replace with the exact date once booked. Do not split skills into separate Goals.',
-    metric: 'IELTS Overall Band — target 7.0 (no invented baseline)',
+    metric: 'IELTS Overall Band\nBaseline: Not set\nTarget: 7.0',
     successCriteria: 'IELTS Overall Band 7.0',
+    milestoneTitles: [
+      'Diagnostic baseline established',
+      'Writing and Speaking weaknesses identified',
+      'Mock performance reaches approximately Band 6.5 readiness',
+      'Full mock reaches target-level readiness',
+      'IELTS exam booked',
+      'IELTS exam completed',
+      'IELTS Overall Band 7.0 achieved',
+    ],
   },
   {
     key: 'health',
@@ -144,7 +153,7 @@ const GOAL_SPECS: GoalSpec[] = [
       'Keep personal finances sufficiently recorded, reviewed and understood so spending does not silently drift out of control.',
     why:
       'Awareness and discipline, not arbitrary wealth-maximizing productivity. Income is typically 1–2×/month; spending is more frequent. Future stale threshold: 5 days without expense or finance review activity.',
-    metric: 'Finance tracking freshness (future: lastFinanceActivity within 5 days)',
+    metric: 'Finance tracking status — integration pending (stale threshold context: 5 days)',
     successCriteria: 'Finances remain visible and reviewable.',
   },
   {
@@ -314,12 +323,12 @@ const PROJECT_SPECS: ProjectSpec[] = [
     title: 'Opportunity Exploration',
     aliases: ['opportunity exploration', 'scholarship research'],
     goalKey: 'explore-edu',
-    projectType: 'HABIT',
+    projectType: 'STANDARD',
     projectContext: 'PERSONAL',
     lifeArea: 'OPPORTUNITY',
     color: '#64748b',
     description:
-      "Occasionally investigate Master's opportunities, scholarships, research, and overseas study/career opportunities. HABIT for ongoing scanning — not an aggressive recurring schedule. No Task recurrence or weekly quota in this seed.",
+      "Occasionally investigate Master's opportunities, scholarships, research, and overseas study/career opportunities. STANDARD (not Habit) — EXPLORE is low-pressure; create occasional Tasks when worth exploring. No recurrence or weekly quota in this seed.",
   },
   {
     key: 'work-rover',
@@ -418,16 +427,14 @@ function milestonesFor(spec: GoalSpec, existing?: GoalMilestone[]): GoalMileston
   const byTitle = new Map(
     (existing ?? []).map((m) => [normalizePlanTitle(m.title), m]),
   );
+  // Preserve IDs when titles match. Reset status so the first milestone is CURRENT
+  // (next checkpoint), not completed — unless we later have evidence of completion.
   return titles.map((title, index) => {
     const prev = byTitle.get(normalizePlanTitle(title));
     return {
       id: prev?.id ?? randomUUID(),
       title,
-      status: prev?.status === 'done' || prev?.status === 'current'
-        ? prev.status
-        : index === 0
-          ? 'current'
-          : 'pending',
+      status: index === 0 ? 'current' : 'pending',
     };
   });
 }
