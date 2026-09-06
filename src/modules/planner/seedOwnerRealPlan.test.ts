@@ -58,4 +58,16 @@ describe('seedOwnerRealPlan matching helpers', () => {
     expect(finance?.metric.toLowerCase()).toMatch(/integration pending|tracking status/);
     expect(finance?.metric).not.toMatch(/^\s*0\s*\/\s*5/);
   });
+
+  it('does not invent Task/TimeBlock specs in the real-plan seed', () => {
+    expect(OWNER_REAL_PLAN_GOAL_SPECS).toHaveLength(6);
+    expect(OWNER_REAL_PLAN_PROJECT_SPECS).toHaveLength(15);
+  });
+
+  it('keeps Explore Opportunity Exploration STANDARD and untracked', () => {
+    const explore = OWNER_REAL_PLAN_GOAL_SPECS.find((g) => g.key === 'explore-edu');
+    expect(explore?.focusType).toBe('EXPLORE');
+    const opp = OWNER_REAL_PLAN_PROJECT_SPECS.find((p) => p.title === 'Opportunity Exploration');
+    expect(opp?.projectType).toBe('STANDARD');
+  });
 });

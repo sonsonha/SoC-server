@@ -197,6 +197,13 @@
       "when": 1720000029000,
       "tag": "0029_project_context",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1720000030000,
+      "tag": "0030_task_daily_focus",
+      "breakpoints": true
     }
   ]
 }

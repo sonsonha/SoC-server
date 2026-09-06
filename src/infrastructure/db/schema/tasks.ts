@@ -37,6 +37,13 @@ export const tasks = pgTable(
   carryOverFromTaskId: text('carry_over_from_task_id'),
   /** Human-readable provenance for cross-week carry-over. */
   carryOverNote: text('carry_over_note'),
+  /** Optional outcome checklist for high-value Tasks (multiline free text). */
+  definitionOfDone: text('definition_of_done'),
+  /**
+   * YYYY-MM-DD (Asia/Ho_Chi_Minh planning day) when this Task is Daily Focus.
+   * Null = not Daily Focus. Soft-enforced one-per-user-per-day in service layer.
+   */
+  dailyFocusDate: text('daily_focus_date'),
   verificationLevel: text('verification_level').notNull().default('SELF'),
   isAnchorCandidate: boolean('is_anchor_candidate').notNull().default(false),
   estimateBiasFactor: real('estimate_bias_factor').notNull().default(1),
@@ -48,5 +55,6 @@ export const tasks = pgTable(
     index('tasks_user_id_project_id_idx').on(t.userId, t.projectId),
     index('tasks_user_id_goal_id_idx').on(t.userId, t.goalId),
     index('tasks_user_id_repeat_series_id_idx').on(t.userId, t.repeatSeriesId),
+    index('tasks_user_id_daily_focus_date_idx').on(t.userId, t.dailyFocusDate),
   ],
 );

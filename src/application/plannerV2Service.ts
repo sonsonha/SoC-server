@@ -28,6 +28,7 @@ import {
   resolveRepeatWeekCount,
   shiftEpochByWeeks,
 } from './sessionEvidence.js';
+import { normalizeDailyFocusDate } from './dailyFocus.js';
 
 export type PlannerTaskStatus = 'INBOX' | 'SCHEDULED' | 'DONE';
 export type PlannerPriority = 'P1' | 'P2' | 'P3' | 'P4';
@@ -180,6 +181,8 @@ export function taskStatusFromDb(status: string): PlannerTaskStatus {
 type CreateTaskInput = {
   title: string;
   notes?: string;
+  definitionOfDone?: string | null;
+  dailyFocusDate?: string | null;
   projectId?: string | null;
   goalId?: string | null;
   goalProcessId?: string | null;
@@ -378,11 +381,20 @@ export class PlannerV2Service {
     }
     const id = randomUUID();
     const now = new Date();
+    const dailyFocusDate = normalizeDailyFocusDate(input.dailyFocusDate);
+    const definitionOfDone = input.definitionOfDone === undefined
+      ? null
+      : (input.definitionOfDone?.trim() || null);
+    if (dailyFocusDate) {
+      await this.clearDailyFocusForDate(userId, dailyFocusDate, null);
+    }
     await this.db.insert(tasks).values({
       id,
       userId,
       title: input.title,
       description: input.notes ?? '',
+      definitionOfDone,
+      dailyFocusDate,
       projectId: input.projectId ?? null,
       goalId,
       goalProcessId,
@@ -447,6 +459,19 @@ export class PlannerV2Service {
     const nextDuration = input.durationMinutes ?? row.estimatedMinutes;
     const nextPriority = input.priority ? priorityToDb(input.priority) : row.priority;
     const nextProjectId = input.projectId === undefined ? row.projectId : input.projectId;
+    const nextDefinitionOfDone = input.definitionOfDone === undefined
+      ? row.definitionOfDone
+      : (input.definitionOfDone?.trim() || null);
+    const nextDailyFocusDate = input.dailyFocusDate === undefined
+      ? row.dailyFocusDate
+      : normalizeDailyFocusDate(input.dailyFocusDate);
+
+    if (
+      nextDailyFocusDate
+      && nextDailyFocusDate !== row.dailyFocusDate
+    ) {
+      await this.clearDailyFocusForDate(userId, nextDailyFocusDate, id);
+    }
 
     const applyToFuture = input.seriesScope === 'THIS_AND_FUTURE' && Boolean(row.repeatSeriesId);
     const targets = applyToFuture
@@ -460,6 +485,8 @@ export class PlannerV2Service {
         .set({
           title: nextTitle,
           description: isSource ? nextNotes : target.description,
+          definitionOfDone: isSource ? nextDefinitionOfDone : target.definitionOfDone,
+          dailyFocusDate: isSource ? nextDailyFocusDate : target.dailyFocusDate,
           projectId: nextProjectId,
           goalId: isSource ? nextGoalId : target.goalId,
           goalProcessId: isSource ? nextProcessId : target.goalProcessId,
@@ -1760,6 +1787,8 @@ export class PlannerV2Service {
       id: row.id,
       title: row.title,
       notes: row.description,
+      definitionOfDone: row.definitionOfDone ?? null,
+      dailyFocusDate: row.dailyFocusDate ?? null,
       projectId: row.projectId,
       goalId: row.goalId,
       goalProcessId: row.goalProcessId,
@@ -1775,6 +1804,35 @@ export class PlannerV2Service {
       revision: row.revision,
       updatedAt: row.updatedAt.toISOString(),
     };
+  }
+
+  /** Soft-enforce one Daily Focus per user per product day. */
+  private async clearDailyFocusForDate(
+    userId: string,
+    date: string,
+    exceptTaskId: string | null,
+  ) {
+    const focused = await this.db
+      .select({ id: tasks.id, revision: tasks.revision })
+      .from(tasks)
+      .where(
+        and(
+          eq(tasks.userId, userId),
+          eq(tasks.dailyFocusDate, date),
+          isNull(tasks.deletedAt),
+        ),
+      );
+    for (const task of focused) {
+      if (exceptTaskId && task.id === exceptTaskId) continue;
+      await this.db
+        .update(tasks)
+        .set({
+          dailyFocusDate: null,
+          revision: task.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+    }
   }
 
   private serializeProject(row: typeof projects.$inferSelect) {

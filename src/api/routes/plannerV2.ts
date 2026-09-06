@@ -13,6 +13,8 @@ const seriesScopeSchema = z.enum(['THIS_INSTANCE', 'THIS_AND_FUTURE']);
 const createTaskSchema = z.object({
   title: z.string().trim().min(1).max(240),
   notes: z.string().max(10_000).optional(),
+  definitionOfDone: z.string().max(10_000).nullable().optional(),
+  dailyFocusDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   projectId: z.string().min(1).nullable().optional(),
   goalId: z.string().min(1).nullable().optional(),
   goalProcessId: z.string().min(1).nullable().optional(),

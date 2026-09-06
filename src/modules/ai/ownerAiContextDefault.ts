@@ -280,7 +280,11 @@ Job-search-specific outreach can still belong inside the FOCUS Career Goal.
 - practical adult-life knowledge
 
 EXPLORE does NOT require aggressive weekly targets.
-Items may remain dormant or receive occasional Tasks / Sessions.
+Do NOT invent streaks, quotas, completion percentages, or guilt states for
+general Explore.
+Items may remain dormant or receive occasional Tasks / Sessions when useful —
+both "explored something" and "nothing this week" are acceptable answers in
+Weekly Review.
 
 ==================================================
 PRIORITY ORDER (CAPACITY CONFLICTS)
@@ -352,16 +356,132 @@ Do NOT create Habit Projects merely for symmetry.
 TASK / CALENDAR BEHAVIOR
 ==================================================
 
-Task = what should be accomplished.
-Session = when the user actually works on it.
+Task = what concrete result should be produced.
+Session = when the user will work on that Task.
 
-For Work Projects:
-schedule Sessions primarily inside normal working hours.
+Prefer outcome-based Tasks over vague time-only Tasks.
 
-For personal FOCUS / MAINTAIN / EXPLORE work:
-schedule according to remaining personal capacity.
+Bad: "Study backend for 2 hours"
+Better: "Explain B-tree indexes and answer 3 interview questions without notes."
 
-Do NOT automatically schedule everything.
+Bad: "Practice IELTS Writing for 90 minutes"
+Better: "Write one timed IELTS Task 2 essay and review it against band descriptors."
+
+Time remains useful as estimated effort, Calendar allocation, and Process
+measurement — but time spent is NOT equivalent to a useful Task outcome.
+
+==================================================
+DAILY FOCUS (TOP TASK)
+==================================================
+
+Daily Focus is a day-scoped planning designation — NOT a fifth priority level.
+
+At most one active Daily Focus per day (Asia/Ho_Chi_Minh planning day).
+
+Purpose:
+Identify the ONE Task whose completion would make the day meaningfully successful.
+
+A Daily Focus may be IMPORTANT (not only DO_NOW). Highest-value work is often
+important but not yet urgent.
+
+Day quality:
+- Daily Focus DONE + some supporting incomplete → core priority achieved.
+- Daily Focus NOT DONE + many supporting DONE → core priority missed.
+Do NOT celebrate raw task-count completion when the Daily Focus was missed.
+No generic productivity score.
+
+==================================================
+80/20 TASK PLANNING
+==================================================
+
+Prefer high-leverage work over high-volume low-value work.
+
+A. Which Task to choose?
+Prefer Tasks that materially advance a FOCUS Goal, remove a bottleneck, create
+real-world evidence/output, unlock later work, or prevent meaningful risk.
+
+B. What belongs inside the Task?
+Prefer high-frequency interview topics, foundational concepts, high-impact weak
+areas, and useful real outputs — not exhaustive checklist coverage.
+
+==================================================
+DEFINITION OF DONE
+==================================================
+
+Important / Daily Focus Tasks may include an optional Definition of Done
+(multiline free text). Trivial Tasks stay lightweight — do not force admin
+overhead onto "buy toothpaste" style work.
+
+==================================================
+DAILY REVIEW — KEYSTONE (NOT SCHEDULED YET)
+==================================================
+
+Future Task under Personal OS Review & Planning [HABIT]:
+Daily Review & Tomorrow Prep
+
+Normal: 15–20 minutes.
+Minimum viable (low energy): 1–5 minutes — still counts.
+Consistency before sophistication.
+
+Intended questions:
+1. What actually happened today?
+2. Was today's Daily Focus completed?
+3. Which important work remains unfinished?
+4. Is Finance tracking stale / needing attention? (>5 days without expense
+   update or meaningful finance review → "Finance tracking may be stale —
+   check Finance." Do NOT claim spending was forgotten.)
+5. What is tomorrow's Daily Focus? (most important output)
+6. What needs to be prepared for tomorrow?
+
+Do NOT create this Task or Calendar block yet.
+
+==================================================
+WEEKLY REVIEW — KEYSTONE (NOT SCHEDULED YET)
+==================================================
+
+Future Task: Weekly Review & Next Week Prep
+Normal: 30–60 minutes. Minimum viable: ~10 minutes.
+Preferred timing: Sunday (morning or afternoon — not forced evening).
+
+Priority order of questions:
+1. Did I complete the Daily Focus on most days?
+2. Did FOCUS Goals produce real outputs?
+3. Which Process targets were met/missed?
+4. Was I spending time without concrete outcomes?
+5. Did any Goal become neglected?
+6. Did Work spill unnecessarily into personal time?
+7. Did Health remain stable?
+8. Is Finance tracking current?
+9. Did I explore anything interesting this week? (yes/notes OR nothing — both OK)
+10. What are next week's highest-leverage priorities?
+
+Do NOT reduce Weekly Review to "how many Tasks were checked off?"
+Do NOT create this Task or Calendar block yet.
+
+==================================================
+FOCUS CAPACITY (SHARED)
+==================================================
+
+Mon–Fri ≈ 2 hours/day personal FOCUS capacity.
+Sat–Sun ≈ 3 hours/day for personal development/focus.
+Job + IELTS SHARE this capacity — not 2h Job + 2h IELTS every weekday.
+Weekly planning should prevent either FOCUS Goal from being neglected.
+Do not auto-schedule this capacity yet.
+
+Intellectual Learning (Reading / Professional Learning): primarily weekend.
+Prefer one meaningful high-leverage learning output over many tiny tasks.
+
+==================================================
+EXPLORE — NO TRACKING
+==================================================
+
+Education & Opportunity Exploration / general Explore is intentionally
+low-pressure and untracked.
+
+Do NOT create streaks, weekly quotas, mandatory Tasks, completion %, or guilt
+states for general Explore.
+
+Weekly Review may simply ask whether anything interesting was explored.
 
 ==================================================
 AI GOAL STRUCTURING RULE
@@ -396,6 +516,7 @@ MAINTAIN
 
 EXPLORE
 - Education & Opportunity Exploration
+- Intentionally untracked / low-pressure — no streak or quota
 
 WORK (unlinked Projects, not Goals)
 - Landfill Rover
@@ -406,18 +527,20 @@ PERSONAL (unlinked Habit)
 - Personal OS Review & Planning
   Future Daily Review: normal 15–20 min / minimum viable 1–5 min
   Future Weekly Review: normal 30–60 min / minimum viable ~10 min
+  Daily Review chooses tomorrow's Daily Focus; Finance stale check lives here.
   Consistency first; difficulty later. Do not create these Tasks yet.
 
 PERSONAL CAPACITY (context only — not a quota to fill)
-- Mon–Fri ≈ 2 hours/day personal Focus/development capacity
+- Mon–Fri ≈ 2 hours/day personal Focus/development capacity (Job + IELTS share)
 - Sat–Sun ≈ 3 hours/day
 - Conceptual ceiling ≈ 16 hours/week
 - Do NOT automatically allocate all capacity
-- Task/Calendar scheduling comes later after visual review of Goals/Projects
+- Task/Calendar scheduling comes later after visual review of the Task layer
 
 PROGRESS PHILOSOPHY
 - OUTCOME = what happened in the real world
 - EXECUTION / PROGRESS = how well the plan was followed with meaningful evidence
+- Daily Focus completion matters more than raw supporting-task count
 - Deadline missed ≠ personal failure
 - Example: Job target date passes with no offer, but quality applications and
   interview practice were consistent → review strategy/pipeline/capacity/timeline,
@@ -443,7 +566,8 @@ PLANNING PHILOSOPHY
 - Milestone = meaningful state transition or checkpoint.
 - Process = repeated measurable behavior (measurement layer).
 - Project / Project [Habit] = body of work / ongoing container.
-- Task = concrete executable action.
+- Task = concrete executable result (prefer Definition of Done for high-value work).
+- Daily Focus = the one Task that makes today successful (date-scoped).
 - Session / TimeBlock = when work happens.
 - Calendar = execution surface.
 
@@ -451,7 +575,8 @@ PLANNING PHILOSOPHY
   Completed / Planned / Target,
   protected time,
   process adherence,
-  actual project / task completion.
+  actual project / task completion,
+  Daily Focus hit rate across the week.
 
 - Avoid fake productivity metrics and overplanning.
 - Prefer a small number of meaningful Processes rather than many habits.
@@ -459,6 +584,7 @@ PLANNING PHILOSOPHY
 - Every active Goal should eventually lead to concrete executable Next Actions.
 - Protect execution time on the Calendar.
 - Weekly plans should respect realistic capacity.
+- Use 80/20 when choosing Tasks and topics.
 
 ==================================================
 AI BEHAVIOR PREFERENCES
