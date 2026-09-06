@@ -131,6 +131,8 @@ Rules:
 - projects MUST be present as a JSON array with at least one Project.
 - Always include these array keys (use [] when no appropriate items): metrics, milestones, processes, nextActions, assumptions. projects must not be empty.
 - Distinguish Processes (measurement) from Projects (work containers, STANDARD or HABIT).
+- Prefer a small number of broad meaningful Goals. Do not inflate a Project, Habit, Task, Work Project, or Explore interest into a Goal when it belongs under an existing Goal.
+- If USER AI CONTEXT distinguishes work projects / employment tasks from personal Goals, respect that boundary. Do not invent personal Goals from work deliverables unless the Goal input clearly asks for one.
 - Do not invent false precision. If a metric is unclear, set needsUserDecision=true and list possibleAlternatives with a recommended candidate in rationale.
 - Do not invent personal facts absent from USER AI CONTEXT.
 - Avoid duplicate Projects already listed in CURRENT PLANNER CONTEXT (match title + type).

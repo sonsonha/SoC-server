@@ -56,10 +56,11 @@ describe('Goal Structuring resolved AI Context', () => {
 
     const result = await service.suggest('owner', { title: 'Achieve IELTS 7.0' });
     expect(prompt).toContain('Computer Engineering graduate from HCMUT');
-    expect(prompt).toContain('Improve English / IELTS');
+    expect(prompt).toContain('Achieve IELTS 7.0');
+    expect(prompt).toContain('WORK CONTEXT — NOT PERSONAL GOALS');
     expect(prompt).toContain('Treat User AI Context as background');
     expect(prompt).toContain('Title: Achieve IELTS 7.0');
-    expect(JSON.stringify(result)).not.toMatch(/WordNote|Drone \/ Remote ID|Robotics/i);
+    expect(JSON.stringify(result)).not.toMatch(/WordNote|Landfill Rover|Drone \/ Remote ID/i);
   });
 
   it('does not put any owner context into the prompt for empty User B', async () => {
@@ -83,7 +84,7 @@ describe('Goal Structuring resolved AI Context', () => {
     await service.suggest('user-b', { title: 'Achieve IELTS 7.0' });
     expect(prompt).toContain('USER AI CONTEXT\n(none provided)');
     expect(prompt).not.toContain('HCMUT');
-    expect(prompt).not.toContain('WordNote');
+    expect(prompt).not.toContain('Landfill Rover');
     expect(prompt).not.toContain('Drone / Remote ID');
   });
 });

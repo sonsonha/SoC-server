@@ -84,7 +84,8 @@ describe('AI context export regressions', () => {
       tasks: [{ title: 'Book a diagnostic test', scheduled: false, done: false }],
     });
     expect(markdown).toContain('Computer Engineering graduate from HCMUT');
-    expect(markdown).toContain('Improve English / IELTS');
+    expect(markdown).toContain('Achieve IELTS 7.0');
+    expect(markdown).toContain('Landfill Rover');
     expect(markdown).not.toMatch(/## User Context\s+\(none\)/);
   });
 
@@ -104,7 +105,7 @@ describe('AI context export regressions', () => {
     });
     expect(markdown).toMatch(/## User Context\s+\(none\)/);
     expect(markdown).not.toContain('HCMUT');
-    expect(markdown).not.toContain('WordNote');
+    expect(markdown).not.toContain('Landfill Rover');
   });
 
   it('Copy Suggestion for owner uses the same resolved context', () => {
@@ -119,7 +120,7 @@ describe('AI context export regressions', () => {
       suggestion,
     });
     expect(markdown).toContain('Computer Engineering graduate from HCMUT');
-    expect(markdown).toContain('Improve English / IELTS');
+    expect(markdown).toContain('Achieve IELTS 7.0');
     expect(markdown).not.toMatch(/## User Context\s+\(none\)/);
   });
 });
