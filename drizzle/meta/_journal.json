@@ -204,6 +204,13 @@
       "when": 1720000030000,
       "tag": "0030_task_daily_focus",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1720000031000,
+      "tag": "0031_task_outcome_achieved",
+      "breakpoints": true
     }
   ]
 }

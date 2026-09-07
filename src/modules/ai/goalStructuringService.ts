@@ -26,7 +26,8 @@ import { durationProcessToHours } from '../../application/durationProcessUnits.j
 
 const MAX_TITLE = 240;
 const MAX_WHY = 4_000;
-const MAX_PROMPT_CHARS = 24_000;
+/** Must fit AI context (up to MAX_AI_CONTEXT_CHARS) plus structure instructions. */
+const MAX_PROMPT_CHARS = MAX_AI_CONTEXT_CHARS + 6_000;
 const RATE_LIMIT_MS = 15_000;
 /** Thinking + JSON for deepseek-v4-pro often needs >90s in production. */
 const AI_TIMEOUT_MS = 150_000;
@@ -463,9 +464,6 @@ export class GoalStructuringService {
     return [
       GOAL_STRUCTURE_JSON_PROMPT,
       '',
-      'USER AI CONTEXT',
-      opts.aiContext.trim() || '(none provided)',
-      '',
       'USER CONTEXT RELEVANCE RULE',
       'Treat User AI Context as background, not as a requirement that every Goal reference every area.',
       'Use only the parts relevant to this Goal. Do not force unrelated education, career, project,',
@@ -473,6 +471,9 @@ export class GoalStructuringService {
       'If the context marks employment / work projects as non-Goals, do not invent personal Goals',
       'from those work areas. Prefer Projects, Tasks, or Habit containers under existing Goals when',
       'the input is not a genuine Goal-level outcome.',
+      '',
+      'USER AI CONTEXT',
+      opts.aiContext.trim() || '(none provided)',
       '',
       'CURRENT PLANNER CONTEXT',
       plannerLines,

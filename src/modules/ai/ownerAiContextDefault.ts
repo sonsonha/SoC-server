@@ -413,37 +413,64 @@ Important / Daily Focus Tasks may include an optional Definition of Done
 overhead onto "buy toothpaste" style work.
 
 ==================================================
-DAILY REVIEW — KEYSTONE (NOT SCHEDULED YET)
+DAILY REVIEW — KEYSTONE
 ==================================================
 
-Future Task under Personal OS Review & Planning [HABIT]:
+Task under Personal OS Review & Planning [HABIT]:
 Daily Review & Tomorrow Prep
 
 Normal: 15–20 minutes.
 Minimum viable (low energy): 1–5 minutes — still counts.
 Consistency before sophistication.
 
-Intended questions:
+IMPORTANT CORRECTION:
+
+Daily Review does NOT normally invent tomorrow's plan or Daily Focus from scratch.
+
+Correct model:
+
+PERIODIC / WEEKLY PLANNING
+→ choose upcoming Tasks, priorities, Daily Focus ahead of time, intended Sessions
+
+DAILY EXECUTION
+→ execute the existing plan
+
+DAILY REVIEW
+→ review today
+→ preview tomorrow's already-planned work
+→ confirm tomorrow's already-selected Daily Focus
+→ replan ONLY if unexpected reality makes the plan unsuitable
+
+Default: KEEP TOMORROW'S PLAN.
+Avoid unnecessary day-to-day planning churn.
+
+Normal review questions:
 1. What actually happened today?
-2. Was today's Daily Focus completed?
-3. Which important work remains unfinished?
-4. Is Finance tracking stale / needing attention? (>5 days without expense
-   update or meaningful finance review → "Finance tracking may be stale —
-   check Finance." Do NOT claim spending was forgotten.)
-5. What is tomorrow's Daily Focus? (most important output)
-6. What needs to be prepared for tomorrow?
+2. Was today's Daily Focus achieved?
+3. Which important work changed or remained unfinished?
+4. Is Finance tracking okay / stale? (>5 days without expense update or
+   meaningful finance review → "Finance tracking may be stale — check Finance."
+   Do NOT claim spending was forgotten.)
+5. What is already planned tomorrow?
+6. What is tomorrow's already-selected Daily Focus?
+7. Has anything unexpected happened that requires replanning?
 
-Do NOT create this Task or Calendar block yet.
+Minimum viable:
+- acknowledge today
+- inspect tomorrow's plan / Daily Focus
+- adjust only if necessary
 
 ==================================================
-WEEKLY REVIEW — KEYSTONE (NOT SCHEDULED YET)
+WEEKLY REVIEW — KEYSTONE (OWNS PROACTIVE PLANNING)
 ==================================================
 
-Future Task: Weekly Review & Next Week Prep
+Task: Weekly Review & Next Week Prep
 Normal: 30–60 minutes. Minimum viable: ~10 minutes.
 Preferred timing: Sunday (morning or afternoon — not forced evening).
 
-Priority order of questions:
+This is the primary planning/replanning point.
+
+Review questions (priority order):
 1. Did I complete the Daily Focus on most days?
 2. Did FOCUS Goals produce real outputs?
 3. Which Process targets were met/missed?
@@ -455,8 +482,29 @@ Priority order of questions:
 9. Did I explore anything interesting this week? (yes/notes OR nothing — both OK)
 10. What are next week's highest-leverage priorities?
 
+Then PREPARE the upcoming week:
+- choose upcoming Tasks
+- identify highest-leverage work (80/20)
+- assign priorities
+- assign Daily Focus ahead of time for upcoming days
+- prepare intended schedule
+
 Do NOT reduce Weekly Review to "how many Tasks were checked off?"
-Do NOT create this Task or Calendar block yet.
+
+==================================================
+TASK OUTCOME VS SESSION COMPLETION
+==================================================
+
+SESSION COMPLETION = execution evidence
+TASK OUTCOME = Definition of Done achieved
+
+For high-value Tasks with Definition of Done:
+all Sessions DONE must NOT automatically mean the Task outcome is complete.
+User confirms "Definition of Done achieved" separately.
+Confirming outcome does not fabricate or mutate Sessions.
+
+Routine Tasks without Definition of Done (Daily/Weekly Review, Sleep
+checkpoints, Exercise) keep Session-based completion.
 
 ==================================================
 FOCUS CAPACITY (SHARED)
@@ -525,10 +573,17 @@ WORK (unlinked Projects, not Goals)
 
 PERSONAL (unlinked Habit)
 - Personal OS Review & Planning
-  Future Daily Review: normal 15–20 min / minimum viable 1–5 min
-  Future Weekly Review: normal 30–60 min / minimum viable ~10 min
-  Daily Review chooses tomorrow's Daily Focus; Finance stale check lives here.
-  Consistency first; difficulty later. Do not create these Tasks yet.
+  Daily Review & Tomorrow Prep: normal 15–20 min / minimum viable 1–5 min
+  Weekly Review & Next Week Prep: normal 30–60 min / minimum viable ~10 min
+  Weekly/periodic planning owns upcoming Tasks + Daily Focus assignment.
+  Daily Review previews/protects tomorrow's existing plan; replans only when needed.
+  Finance stale check lives inside Review (no separate daily Finance Task).
+  Consistency first; difficulty later.
+
+MAINTAIN / HABIT RECURRENCE
+- Materialize concrete future instances only up to MIN(Goal deadline, now + ~3 months).
+- Unlinked / no-deadline Goals → now + ~3 months.
+- Do not invent infinite recurrence.
 
 PERSONAL CAPACITY (context only — not a quota to fill)
 - Mon–Fri ≈ 2 hours/day personal Focus/development capacity (Job + IELTS share)

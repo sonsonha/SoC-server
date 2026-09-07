@@ -44,6 +44,11 @@ export const tasks = pgTable(
    * Null = not Daily Focus. Soft-enforced one-per-user-per-day in service layer.
    */
   dailyFocusDate: text('daily_focus_date'),
+  /**
+   * When set, Task outcome (Definition of Done) is confirmed complete.
+   * Independent of Session completion timestamps.
+   */
+  outcomeAchievedAtEpochMs: bigint('outcome_achieved_at_epoch_ms', { mode: 'number' }),
   verificationLevel: text('verification_level').notNull().default('SELF'),
   isAnchorCandidate: boolean('is_anchor_candidate').notNull().default(false),
   estimateBiasFactor: real('estimate_bias_factor').notNull().default(1),

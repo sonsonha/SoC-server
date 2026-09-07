@@ -1,6 +1,6 @@
 import { INITIAL_OWNER_AI_CONTEXT_DEFAULT } from './ownerAiContextDefault.js';
 
-export const MAX_AI_CONTEXT_CHARS = 22_000;
+export const MAX_AI_CONTEXT_CHARS = 28_000;
 
 export type ResolvedUserAiContext = {
   aiContext: string;

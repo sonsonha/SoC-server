@@ -24,9 +24,14 @@ import {
   buildCarryOverNote,
   deriveTaskProgressFromSessions,
   directTaskCompletePolicy,
+  futureDayOffsets,
   futureWeekOffsets,
+  resolveRepeatDayCount,
   resolveRepeatWeekCount,
+  resolveTaskStatusFromEvidence,
+  shiftEpochByDays,
   shiftEpochByWeeks,
+  type RepeatCadence,
 } from './sessionEvidence.js';
 import { normalizeDailyFocusDate } from './dailyFocus.js';
 
@@ -183,6 +188,7 @@ type CreateTaskInput = {
   notes?: string;
   definitionOfDone?: string | null;
   dailyFocusDate?: string | null;
+  outcomeAchieved?: boolean;
   projectId?: string | null;
   goalId?: string | null;
   goalProcessId?: string | null;
@@ -203,6 +209,15 @@ type PatchTaskInput = Partial<CreateTaskInput> & {
   seriesScope?: SeriesEditScope;
 };
 
+type RepeatRangeInput = {
+  weeks?: number | null;
+  days?: number | null;
+  until?: string | null;
+  cadence?: RepeatCadence;
+  /** Seed / bulk materialization: skip Google Calendar upserts (local PENDING blocks). */
+  skipCalendarSync?: boolean;
+};
+
 type CreateTimeBlockInput = {
   taskId?: string | null;
   projectId?: string | null;
@@ -216,6 +231,8 @@ type CreateTimeBlockInput = {
   repeatSeriesId?: string | null;
   /** When adding a Session to a repeated Task: propagate to future Task instances. */
   seriesScope?: SeriesEditScope;
+  /** Seed / bulk: skip calendar upsert after insert. */
+  skipCalendarSync?: boolean;
 };
 
 type PatchTimeBlockInput = Partial<CreateTimeBlockInput> & {
@@ -267,11 +284,6 @@ type CreateGoalInput = {
 };
 
 type PatchGoalInput = Partial<CreateGoalInput>;
-
-type RepeatRangeInput = {
-  weeks?: number | null;
-  until?: string | null;
-};
 
 function projectTypeFromDb(value: string | null | undefined): ProjectType {
   return value === 'HABIT' ? 'HABIT' : 'STANDARD';
@@ -425,10 +437,45 @@ export class PlannerV2Service {
       this.badRequest('goalProcessId requires a goalId owned by the current user');
     }
 
+    if (input.outcomeAchieved === true) {
+      const nowMs = Date.now();
+      await this.db
+        .update(tasks)
+        .set({
+          outcomeAchievedAtEpochMs: row.outcomeAchievedAtEpochMs ?? nowMs,
+          status: 'DONE',
+          completedAtEpochMs: row.completedAtEpochMs ?? nowMs,
+          revision: row.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, id), eq(tasks.userId, userId)));
+      return this.serializeTask((await this.requireOwnedTask(userId, id)));
+    }
+
+    if (input.outcomeAchieved === false) {
+      await this.db
+        .update(tasks)
+        .set({
+          outcomeAchievedAtEpochMs: null,
+          status: row.status === 'DONE' ? 'SCHEDULED' : row.status,
+          completedAtEpochMs: null,
+          revision: row.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tasks.id, id), eq(tasks.userId, userId)));
+      await this.syncTaskStatusFromSessions(userId, id);
+      return this.serializeTask((await this.requireOwnedTask(userId, id)));
+    }
+
     if (input.status === 'DONE') {
       const sessions = await this.listActiveSessionsForTask(userId, id);
-      const policy = directTaskCompletePolicy(sessions);
+      const policy = directTaskCompletePolicy(sessions, {
+        definitionOfDone: row.definitionOfDone,
+      });
       if (!policy.allow) {
+        if (policy.reason === 'REQUIRES_OUTCOME') {
+          this.badRequest('Confirm Definition of Done to complete this Task — session evidence alone is not enough.');
+        }
         if (policy.reason === 'ZERO_SESSIONS') {
           this.badRequest('Schedule at least one session to track completion.');
         }
@@ -647,7 +694,9 @@ export class PlannerV2Service {
     if (input.taskId) {
       await this.syncTaskStatusFromSessions(userId, input.taskId);
     }
-    const created = await this.syncBlock(userId, id);
+    const created = input.skipCalendarSync
+      ? this.serializeBlock((await this.db.select().from(timeBlocks).where(eq(timeBlocks.id, id)).limit(1))[0]!)
+      : await this.syncBlock(userId, id);
 
     if (propagateFuture && task?.repeatSeriesId && sessionSeriesId) {
       const futureTasks = await this.listSeriesTasksFrom(
@@ -685,7 +734,9 @@ export class PlannerV2Service {
           updatedAt: new Date(),
           deletedAt: null,
         });
-        await this.syncBlock(userId, blockId);
+        if (!input.skipCalendarSync) {
+          await this.syncBlock(userId, blockId);
+        }
         await this.syncTaskStatusFromSessions(userId, future.id);
       }
     }
@@ -834,6 +885,7 @@ export class PlannerV2Service {
   /**
    * Repeat Task: materialize future Task instances + ALL current Sessions.
    * Source Task joins (or keeps) a shared repeatSeriesId.
+   * cadence WEEKLY (default) or DAILY — Maintain horizon typically capped via `until`.
    */
   async repeatTask(userId: string, taskId: string, range: RepeatRangeInput) {
     const source = await this.requireOwnedTask(userId, taskId);
@@ -841,11 +893,19 @@ export class PlannerV2Service {
     const fromEpoch = source.deadlineEpochMs
       ?? sessions[0]?.startEpochMs
       ?? Date.now();
-    const weekCount = resolveRepeatWeekCount({
-      weeks: range.weeks,
-      untilEpochMs: range.until ? new Date(range.until).getTime() : null,
-      fromEpochMs: fromEpoch,
-    });
+    const cadence: RepeatCadence = range.cadence === 'DAILY' ? 'DAILY' : 'WEEKLY';
+    const untilEpochMs = range.until ? new Date(range.until).getTime() : null;
+    const offsets = cadence === 'DAILY'
+      ? futureDayOffsets(resolveRepeatDayCount({
+        days: range.days,
+        untilEpochMs,
+        fromEpochMs: fromEpoch,
+      }))
+      : futureWeekOffsets(resolveRepeatWeekCount({
+        weeks: range.weeks,
+        untilEpochMs,
+        fromEpochMs: fromEpoch,
+      }));
     const seriesId = source.repeatSeriesId ?? randomUUID();
     if (!source.repeatSeriesId) {
       await this.db
@@ -854,7 +914,6 @@ export class PlannerV2Service {
         .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)));
     }
 
-    // Ensure each source session has a stable series id for correspondence.
     const sessionSeriesById = new Map<string, string>();
     for (const session of sessions) {
       const sid = session.repeatSeriesId ?? randomUUID();
@@ -867,17 +926,26 @@ export class PlannerV2Service {
       }
     }
 
+    const shift = (epoch: number, offset: number) =>
+      cadence === 'DAILY' ? shiftEpochByDays(epoch, offset) : shiftEpochByWeeks(epoch, offset);
+
     const createdTaskIds: string[] = [];
-    for (const weekOffset of futureWeekOffsets(weekCount)) {
+    const taskValues: Array<typeof tasks.$inferInsert> = [];
+    const blockValues: Array<typeof timeBlocks.$inferInsert> = [];
+
+    for (const offset of offsets) {
       const newTaskId = randomUUID();
       const dueAt = source.deadlineEpochMs != null
-        ? shiftEpochByWeeks(source.deadlineEpochMs, weekOffset)
+        ? shift(source.deadlineEpochMs, offset)
         : null;
-      await this.db.insert(tasks).values({
+      taskValues.push({
         id: newTaskId,
         userId,
         title: source.title,
-        description: '',
+        description: source.description,
+        definitionOfDone: source.definitionOfDone,
+        dailyFocusDate: null,
+        outcomeAchievedAtEpochMs: null,
         projectId: source.projectId,
         goalId: source.goalId,
         goalProcessId: source.goalProcessId,
@@ -897,9 +965,9 @@ export class PlannerV2Service {
 
       for (const session of sessions) {
         const blockId = randomUUID();
-        const start = shiftEpochByWeeks(session.startEpochMs, weekOffset);
-        const end = shiftEpochByWeeks(session.endEpochMs, weekOffset);
-        await this.db.insert(timeBlocks).values({
+        const start = shift(session.startEpochMs, offset);
+        const end = shift(session.endEpochMs, offset);
+        blockValues.push({
           id: blockId,
           userId,
           taskId: newTaskId,
@@ -918,10 +986,36 @@ export class PlannerV2Service {
           updatedAt: new Date(),
           deletedAt: null,
         });
-        await this.syncBlock(userId, blockId);
       }
-      if (sessions.length > 0) {
-        await this.syncTaskStatusFromSessions(userId, newTaskId);
+    }
+
+    if (range.skipCalendarSync) {
+      // Bulk path for seeds / horizon materialization (no Google upserts).
+      const CHUNK = 100;
+      for (let i = 0; i < taskValues.length; i += CHUNK) {
+        await this.db.insert(tasks).values(taskValues.slice(i, i + CHUNK));
+      }
+      for (let i = 0; i < blockValues.length; i += CHUNK) {
+        await this.db.insert(timeBlocks).values(blockValues.slice(i, i + CHUNK));
+      }
+      if (sessions.length > 0 && createdTaskIds.length > 0) {
+        await this.db
+          .update(tasks)
+          .set({ status: 'SCHEDULED', updatedAt: new Date() })
+          .where(and(eq(tasks.userId, userId), inArray(tasks.id, createdTaskIds)));
+      }
+    } else {
+      for (const taskValue of taskValues) {
+        await this.db.insert(tasks).values(taskValue);
+      }
+      for (const blockValue of blockValues) {
+        await this.db.insert(timeBlocks).values(blockValue);
+        await this.syncBlock(userId, blockValue.id!);
+      }
+      for (const newTaskId of createdTaskIds) {
+        if (sessions.length > 0) {
+          await this.syncTaskStatusFromSessions(userId, newTaskId);
+        }
       }
     }
 
@@ -929,7 +1023,9 @@ export class PlannerV2Service {
       seriesId,
       sourceTaskId: taskId,
       createdTaskIds,
-      weeks: weekCount,
+      weeks: cadence === 'WEEKLY' ? offsets.length : undefined,
+      days: cadence === 'DAILY' ? offsets.length : undefined,
+      cadence,
     };
   }
 
@@ -1789,6 +1885,10 @@ export class PlannerV2Service {
       notes: row.description,
       definitionOfDone: row.definitionOfDone ?? null,
       dailyFocusDate: row.dailyFocusDate ?? null,
+      outcomeAchieved: Boolean(row.outcomeAchievedAtEpochMs),
+      outcomeAchievedAt: row.outcomeAchievedAtEpochMs
+        ? new Date(row.outcomeAchievedAtEpochMs).toISOString()
+        : null,
       projectId: row.projectId,
       goalId: row.goalId,
       goalProcessId: row.goalProcessId,
@@ -1899,10 +1999,15 @@ export class PlannerV2Service {
     const row = await this.requireOwnedTask(userId, taskId);
     const sessions = await this.listActiveSessionsForTask(userId, taskId);
     const derived = deriveTaskProgressFromSessions(sessions);
+    const resolved = resolveTaskStatusFromEvidence({
+      definitionOfDone: row.definitionOfDone,
+      outcomeAchieved: Boolean(row.outcomeAchievedAtEpochMs),
+      sessionDerived: derived.derivedTaskStatus,
+    });
     const nextStatus =
-      derived.derivedTaskStatus === 'DONE'
+      resolved === 'DONE'
         ? 'DONE'
-        : derived.derivedTaskStatus === 'SCHEDULED'
+        : resolved === 'SCHEDULED'
           ? 'SCHEDULED'
           : 'TODO';
     const completedAtEpochMs = nextStatus === 'DONE'

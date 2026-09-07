@@ -15,6 +15,7 @@ const createTaskSchema = z.object({
   notes: z.string().max(10_000).optional(),
   definitionOfDone: z.string().max(10_000).nullable().optional(),
   dailyFocusDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  outcomeAchieved: z.boolean().optional(),
   projectId: z.string().min(1).nullable().optional(),
   goalId: z.string().min(1).nullable().optional(),
   goalProcessId: z.string().min(1).nullable().optional(),
@@ -53,10 +54,12 @@ const createProjectSchema = z.object({
 
 const repeatRangeSchema = z.object({
   weeks: z.number().int().positive().max(52).optional(),
+  days: z.number().int().positive().max(92).optional(),
   until: z.string().max(64).nullable().optional(),
+  cadence: z.enum(['WEEKLY', 'DAILY']).optional(),
 }).refine(
-  (value) => value.weeks != null || value.until != null,
-  { message: 'Provide weeks or until' },
+  (value) => value.weeks != null || value.days != null || value.until != null,
+  { message: 'Provide weeks, days, or until' },
 );
 
 const milestoneSchema = z.object({

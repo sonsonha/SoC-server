@@ -23,6 +23,13 @@ describe('Daily Focus does not bypass Session completion', () => {
     const policy = directTaskCompletePolicy([{ id: 'a', status: 'PLANNED' }]);
     expect(policy.allow).toBe(true);
   });
+
+  it('blocks direct complete when Definition of Done requires outcome confirm', () => {
+    const policy = directTaskCompletePolicy([{ id: 'a', status: 'PLANNED' }], {
+      definitionOfDone: '- criteria',
+    });
+    expect(policy).toEqual({ allow: false, reason: 'REQUIRES_OUTCOME' });
+  });
 });
 
 describe('Definition of Done is optional', () => {
