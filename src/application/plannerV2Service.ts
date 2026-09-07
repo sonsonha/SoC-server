@@ -34,6 +34,12 @@ import {
   type RepeatCadence,
 } from './sessionEvidence.js';
 import { normalizeDailyFocusDate, productDateFromEpoch, resolveFocusOnSessionMove } from './dailyFocus.js';
+import {
+  applySessionOutcomePatch,
+  serializeSessionOutcome,
+  sessionOutcomeFromRow,
+  type SessionOutcomePayload,
+} from '../domain/sessionOutcome.js';
 
 export type PlannerTaskStatus = 'INBOX' | 'SCHEDULED' | 'DONE';
 export type PlannerPriority = 'P1' | 'P2' | 'P3' | 'P4';
@@ -240,10 +246,13 @@ type CreateTimeBlockInput = {
   seriesScope?: SeriesEditScope;
   /** Seed / bulk: skip calendar upsert after insert. */
   skipCalendarSync?: boolean;
+  /** Optional Session Outcome — independent of status/DONE. */
+  sessionOutcome?: Partial<SessionOutcomePayload> | null;
 };
 
 type PatchTimeBlockInput = Partial<CreateTimeBlockInput> & {
   seriesScope?: SeriesEditScope;
+  sessionOutcome?: Partial<SessionOutcomePayload> | null;
 };
 
 export type ProjectType = 'STANDARD' | 'HABIT';
@@ -758,22 +767,46 @@ export class PlannerV2Service {
     const end = input.endAt ? new Date(input.endAt).getTime() : row.endEpochMs;
     this.validateWindow(start, end);
 
+    const hasOutcomePatch = input.sessionOutcome !== undefined;
+    const hasStructural =
+      input.startAt !== undefined
+      || input.endAt !== undefined
+      || input.title !== undefined
+      || input.notes !== undefined
+      || input.color !== undefined
+      || input.reminderMinutes !== undefined
+      || input.taskId !== undefined
+      || input.projectId !== undefined
+      || input.isDailyFocus !== undefined;
+
     if (input.status !== undefined) {
       await this.setSessionCompletion(userId, id, input.status === 'DONE');
       const afterStatus = await this.requireOwnedTimeBlock(userId, id);
-      const hasStructural =
-        input.startAt !== undefined
-        || input.endAt !== undefined
-        || input.title !== undefined
-        || input.notes !== undefined
-        || input.color !== undefined
-        || input.reminderMinutes !== undefined
-        || input.taskId !== undefined
-        || input.projectId !== undefined
-        || input.isDailyFocus !== undefined;
-      if (!hasStructural) {
+      if (!hasStructural && !hasOutcomePatch) {
         return this.serializeBlock(afterStatus);
       }
+    }
+
+    // Outcome-only (and status+outcome) patches: update evidence without Google timing sync.
+    if (hasOutcomePatch && !hasStructural) {
+      const current = await this.requireOwnedTimeBlock(userId, id);
+      const nextOutcome = applySessionOutcomePatch(
+        sessionOutcomeFromRow(current),
+        input.sessionOutcome ?? { type: 'NONE' },
+      );
+      await this.db
+        .update(timeBlocks)
+        .set({
+          sessionOutcomeType: nextOutcome.type,
+          sessionOutcomeItems: nextOutcome.type === 'CHECKLIST' ? nextOutcome.items : null,
+          sessionOutcomeTarget: nextOutcome.type === 'QUANTITY' ? nextOutcome.target : null,
+          sessionOutcomeActual: nextOutcome.type === 'QUANTITY' ? nextOutcome.actual : null,
+          sessionOutcomeUnit: nextOutcome.type === 'QUANTITY' ? nextOutcome.unit : null,
+          revision: current.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(timeBlocks.id, id), eq(timeBlocks.userId, userId)));
+      return this.serializeBlock(await this.requireOwnedTimeBlock(userId, id));
     }
 
     const nextTitle = input.title ?? row.title;
@@ -786,6 +819,12 @@ export class PlannerV2Service {
     const nextProjectId = input.projectId === undefined ? row.projectId : input.projectId;
     const deltaStart = start - row.startEpochMs;
     const deltaEnd = end - row.endEpochMs;
+    const nextOutcome = hasOutcomePatch
+      ? applySessionOutcomePatch(
+        sessionOutcomeFromRow(row),
+        input.sessionOutcome ?? { type: 'NONE' },
+      )
+      : sessionOutcomeFromRow(row);
 
     let nextIsDailyFocus = Boolean(row.isDailyFocus);
     if (input.isDailyFocus === true) nextIsDailyFocus = true;
@@ -849,6 +888,15 @@ export class PlannerV2Service {
           color: nextColor,
           reminderMinutes: nextReminder,
           isDailyFocus: isSource ? nextIsDailyFocus : false,
+          ...(isSource && hasOutcomePatch
+            ? {
+              sessionOutcomeType: nextOutcome.type,
+              sessionOutcomeItems: nextOutcome.type === 'CHECKLIST' ? nextOutcome.items : null,
+              sessionOutcomeTarget: nextOutcome.type === 'QUANTITY' ? nextOutcome.target : null,
+              sessionOutcomeActual: nextOutcome.type === 'QUANTITY' ? nextOutcome.actual : null,
+              sessionOutcomeUnit: nextOutcome.type === 'QUANTITY' ? nextOutcome.unit : null,
+            }
+            : {}),
           syncStatus: 'PENDING',
           revision: target.revision + 1,
           updatedAt: new Date(),
@@ -863,16 +911,13 @@ export class PlannerV2Service {
     for (const target of targets) {
       const taskId = target.id === id ? nextTaskId : target.taskId;
       if (taskId) affectedTaskIds.add(taskId);
-      if (row.taskId) affectedTaskIds.add(row.taskId);
+      if (target.taskId) affectedTaskIds.add(target.taskId);
     }
     for (const taskId of affectedTaskIds) {
       await this.syncTaskStatusFromSessions(userId, taskId);
     }
 
-    if (input.skipCalendarSync) {
-      return this.serializeBlock(await this.requireOwnedTimeBlock(userId, id));
-    }
-    return this.syncBlock(userId, id);
+    return this.serializeBlock(await this.requireOwnedTimeBlock(userId, id));
   }
 
   async deleteTimeBlock(
@@ -1931,6 +1976,7 @@ export class PlannerV2Service {
         ? new Date(row.completedAtEpochMs).toISOString()
         : null,
       isDailyFocus: Boolean(row.isDailyFocus),
+      sessionOutcome: serializeSessionOutcome(sessionOutcomeFromRow(row)),
       repeatSeriesId: row.repeatSeriesId,
       ownership: 'PLANNER' as const,
       googleEventId: row.googleEventId,

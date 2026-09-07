@@ -1,6 +1,8 @@
-import { bigint, boolean, index, integer, pgTable, text } from 'drizzle-orm/pg-core';
+import { bigint, boolean, index, integer, jsonb, pgTable, text } from 'drizzle-orm/pg-core';
 import { syncColumns } from './syncColumns.js';
 import { users } from './identity.js';
+
+type SessionOutcomeItemRow = { id: string; text: string; done: boolean };
 
 /**
  * A user-owned allocation of time. Tasks remain the source of truth for work;
@@ -29,6 +31,15 @@ export const timeBlocks = pgTable(
    * Completing the Session must NOT clear this flag (historical adherence).
    */
   isDailyFocus: boolean('is_daily_focus').notNull().default(false),
+  /**
+   * Optional Session Outcome (NONE | CHECKLIST | QUANTITY).
+   * Independent from status/DONE and from Task definition_of_done.
+   */
+  sessionOutcomeType: text('session_outcome_type').notNull().default('NONE'),
+  sessionOutcomeItems: jsonb('session_outcome_items').$type<SessionOutcomeItemRow[] | null>(),
+  sessionOutcomeTarget: integer('session_outcome_target'),
+  sessionOutcomeActual: integer('session_outcome_actual'),
+  sessionOutcomeUnit: text('session_outcome_unit'),
   /** Links corresponding Sessions across materialized weeks (Repeat Session / Repeat Task). */
   repeatSeriesId: text('repeat_series_id'),
   origin: text('origin').notNull().default('PLANNER'),
