@@ -374,7 +374,10 @@ measurement — but time spent is NOT equivalent to a useful Task outcome.
 DAILY FOCUS (TOP TASK)
 ==================================================
 
-Daily Focus is a day-scoped planning designation — NOT a fifth priority level.
+Daily Focus is a Session-scoped planning designation — NOT a fifth priority level.
+At most one active Daily Focus Session per local day (Asia/Ho_Chi_Minh).
+A Task may contribute Daily Focus Sessions on multiple days (different Sessions).
+Completing the focused Session is what counts — not overall Task completion.
 
 At most one active Daily Focus per day (Asia/Ho_Chi_Minh planning day).
 
@@ -622,7 +625,8 @@ PLANNING PHILOSOPHY
 - Process = repeated measurable behavior (measurement layer).
 - Project / Project [Habit] = body of work / ongoing container.
 - Task = concrete executable result (prefer Definition of Done for high-value work).
-- Daily Focus = the one Task that makes today successful (date-scoped).
+- Daily Focus = the one Session that makes today successful (Session-scoped).
+  A multi-day Task may hold Daily Focus on several days via separate Sessions.
 - Session / TimeBlock = when work happens.
 - Calendar = execution surface.
 

@@ -1,4 +1,4 @@
-import { bigint, index, integer, pgTable, text } from 'drizzle-orm/pg-core';
+import { bigint, boolean, index, integer, pgTable, text } from 'drizzle-orm/pg-core';
 import { syncColumns } from './syncColumns.js';
 import { users } from './identity.js';
 
@@ -23,6 +23,12 @@ export const timeBlocks = pgTable(
   /** Optional intention/result for one execution session (separate from Task notes). */
   notes: text('notes').notNull().default(''),
   completedAtEpochMs: bigint('completed_at_epoch_ms', { mode: 'number' }),
+  /**
+   * Daily Focus belongs to this Session instance (not the parent Task).
+   * Local focus date = Asia/Ho_Chi_Minh day of startEpochMs.
+   * Completing the Session must NOT clear this flag (historical adherence).
+   */
+  isDailyFocus: boolean('is_daily_focus').notNull().default(false),
   /** Links corresponding Sessions across materialized weeks (Repeat Session / Repeat Task). */
   repeatSeriesId: text('repeat_series_id'),
   origin: text('origin').notNull().default('PLANNER'),
@@ -39,5 +45,6 @@ export const timeBlocks = pgTable(
     index('time_blocks_user_id_task_id_idx').on(t.userId, t.taskId),
     index('time_blocks_user_id_start_idx').on(t.userId, t.startEpochMs),
     index('time_blocks_user_id_repeat_series_id_idx').on(t.userId, t.repeatSeriesId),
+    index('time_blocks_user_id_is_daily_focus_idx').on(t.userId, t.isDailyFocus),
   ],
 );

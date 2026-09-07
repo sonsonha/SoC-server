@@ -36,6 +36,8 @@ const createTimeBlockSchema = z.object({
   notes: z.string().max(10_000).optional(),
   status: z.enum(['PLANNED', 'DONE']).optional(),
   repeatSeriesId: z.string().min(1).nullable().optional(),
+  isDailyFocus: z.boolean().optional(),
+  replaceDailyFocus: z.boolean().optional(),
   seriesScope: seriesScopeSchema.optional(),
 });
 

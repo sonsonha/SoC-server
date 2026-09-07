@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, gt, inArray, isNull, lt } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, isNull, lt } from 'drizzle-orm';
 import type { Db } from '../infrastructure/db/client.js';
 import {
   calendarCommitments,
@@ -33,7 +33,7 @@ import {
   shiftEpochByWeeks,
   type RepeatCadence,
 } from './sessionEvidence.js';
-import { normalizeDailyFocusDate } from './dailyFocus.js';
+import { normalizeDailyFocusDate, productDateFromEpoch, resolveFocusOnSessionMove } from './dailyFocus.js';
 
 export type PlannerTaskStatus = 'INBOX' | 'SCHEDULED' | 'DONE';
 export type PlannerPriority = 'P1' | 'P2' | 'P3' | 'P4';
@@ -229,6 +229,13 @@ type CreateTimeBlockInput = {
   notes?: string;
   status?: 'PLANNED' | 'DONE';
   repeatSeriesId?: string | null;
+  /** Session-level Daily Focus for this concrete instance. */
+  isDailyFocus?: boolean;
+  /**
+   * When setting/moving Daily Focus onto a day that already has one:
+   * true → clear the existing focus Session; false/omit → 409 CONFLICT.
+   */
+  replaceDailyFocus?: boolean;
   /** When adding a Session to a repeated Task: propagate to future Task instances. */
   seriesScope?: SeriesEditScope;
   /** Seed / bulk: skip calendar upsert after insert. */
@@ -393,20 +400,18 @@ export class PlannerV2Service {
     }
     const id = randomUUID();
     const now = new Date();
-    const dailyFocusDate = normalizeDailyFocusDate(input.dailyFocusDate);
+    // Task-level daily_focus_date is deprecated — Session isDailyFocus is source of truth.
+    void normalizeDailyFocusDate(input.dailyFocusDate);
     const definitionOfDone = input.definitionOfDone === undefined
       ? null
       : (input.definitionOfDone?.trim() || null);
-    if (dailyFocusDate) {
-      await this.clearDailyFocusForDate(userId, dailyFocusDate, null);
-    }
     await this.db.insert(tasks).values({
       id,
       userId,
       title: input.title,
       description: input.notes ?? '',
       definitionOfDone,
-      dailyFocusDate,
+      dailyFocusDate: null,
       projectId: input.projectId ?? null,
       goalId,
       goalProcessId,
@@ -509,15 +514,9 @@ export class PlannerV2Service {
     const nextDefinitionOfDone = input.definitionOfDone === undefined
       ? row.definitionOfDone
       : (input.definitionOfDone?.trim() || null);
-    const nextDailyFocusDate = input.dailyFocusDate === undefined
-      ? row.dailyFocusDate
-      : normalizeDailyFocusDate(input.dailyFocusDate);
-
-    if (
-      nextDailyFocusDate
-      && nextDailyFocusDate !== row.dailyFocusDate
-    ) {
-      await this.clearDailyFocusForDate(userId, nextDailyFocusDate, id);
+    // Deprecated: Task-level Daily Focus no longer drives product behavior.
+    if (input.dailyFocusDate !== undefined) {
+      void normalizeDailyFocusDate(input.dailyFocusDate);
     }
 
     const applyToFuture = input.seriesScope === 'THIS_AND_FUTURE' && Boolean(row.repeatSeriesId);
@@ -533,7 +532,7 @@ export class PlannerV2Service {
           title: nextTitle,
           description: isSource ? nextNotes : target.description,
           definitionOfDone: isSource ? nextDefinitionOfDone : target.definitionOfDone,
-          dailyFocusDate: isSource ? nextDailyFocusDate : target.dailyFocusDate,
+          dailyFocusDate: null,
           projectId: nextProjectId,
           goalId: isSource ? nextGoalId : target.goalId,
           goalProcessId: isSource ? nextProcessId : target.goalProcessId,
@@ -684,6 +683,7 @@ export class PlannerV2Service {
       status,
       notes: input.notes ?? '',
       completedAtEpochMs: status === 'DONE' ? Date.now() : null,
+      isDailyFocus: false,
       reminderMinutes: input.reminderMinutes ?? null,
       repeatSeriesId: sessionSeriesId,
       syncStatus: 'PENDING',
@@ -691,6 +691,11 @@ export class PlannerV2Service {
       updatedAt: new Date(),
       deletedAt: null,
     });
+    if (input.isDailyFocus) {
+      await this.setSessionDailyFocus(userId, id, true, {
+        replaceDailyFocus: input.replaceDailyFocus === true,
+      });
+    }
     if (input.taskId) {
       await this.syncTaskStatusFromSessions(userId, input.taskId);
     }
@@ -727,6 +732,7 @@ export class PlannerV2Service {
           status: 'PLANNED',
           notes: input.notes ?? '',
           completedAtEpochMs: null,
+          isDailyFocus: false,
           reminderMinutes: input.reminderMinutes ?? null,
           repeatSeriesId: sessionSeriesId,
           syncStatus: 'PENDING',
@@ -754,7 +760,6 @@ export class PlannerV2Service {
 
     if (input.status !== undefined) {
       await this.setSessionCompletion(userId, id, input.status === 'DONE');
-      // Re-read after completion toggle; continue with other field patches if any.
       const afterStatus = await this.requireOwnedTimeBlock(userId, id);
       const hasStructural =
         input.startAt !== undefined
@@ -764,7 +769,8 @@ export class PlannerV2Service {
         || input.color !== undefined
         || input.reminderMinutes !== undefined
         || input.taskId !== undefined
-        || input.projectId !== undefined;
+        || input.projectId !== undefined
+        || input.isDailyFocus !== undefined;
       if (!hasStructural) {
         return this.serializeBlock(afterStatus);
       }
@@ -781,6 +787,49 @@ export class PlannerV2Service {
     const deltaStart = start - row.startEpochMs;
     const deltaEnd = end - row.endEpochMs;
 
+    let nextIsDailyFocus = Boolean(row.isDailyFocus);
+    if (input.isDailyFocus === true) nextIsDailyFocus = true;
+    if (input.isDailyFocus === false) nextIsDailyFocus = false;
+
+    const sourceDate = productDateFromEpoch(row.startEpochMs);
+    const destDate = productDateFromEpoch(start);
+    if (nextIsDailyFocus && (input.startAt !== undefined || input.isDailyFocus === true)) {
+      const destFocus = await this.findDailyFocusSessionOnDate(userId, destDate, id);
+      const move = resolveFocusOnSessionMove({
+        wasDailyFocus: nextIsDailyFocus,
+        sourceDate,
+        destDate,
+        destExistingFocusSessionId: destFocus?.id ?? null,
+        movingSessionId: id,
+      });
+      if (move.action === 'CONFLICT') {
+        if (input.replaceDailyFocus !== true) {
+          throw Object.assign(
+            new Error('Destination day already has a Daily Focus Session'),
+            {
+              statusCode: 409,
+              code: 'DAILY_FOCUS_CONFLICT',
+              existingFocusSessionId: move.existingFocusSessionId,
+            },
+          );
+        }
+        await this.clearSessionDailyFocusForDate(userId, destDate, id);
+      } else if (destFocus && destFocus.id !== id && input.isDailyFocus === true) {
+        if (input.replaceDailyFocus !== true) {
+          throw Object.assign(
+            new Error('This day already has a Daily Focus Session'),
+            {
+              statusCode: 409,
+              code: 'DAILY_FOCUS_CONFLICT',
+              existingFocusSessionId: destFocus.id,
+            },
+          );
+        }
+        await this.clearSessionDailyFocusForDate(userId, destDate, id);
+      }
+    }
+
+    // Series edits never propagate Daily Focus.
     const applyToFuture = input.seriesScope === 'THIS_AND_FUTURE' && Boolean(row.repeatSeriesId);
     const targets = applyToFuture
       ? await this.listSeriesBlocksFrom(userId, row.repeatSeriesId!, row.startEpochMs, id)
@@ -799,12 +848,15 @@ export class PlannerV2Service {
           endEpochMs: isSource ? end : target.endEpochMs + deltaEnd,
           color: nextColor,
           reminderMinutes: nextReminder,
+          isDailyFocus: isSource ? nextIsDailyFocus : false,
           syncStatus: 'PENDING',
           revision: target.revision + 1,
           updatedAt: new Date(),
         })
         .where(and(eq(timeBlocks.id, target.id), eq(timeBlocks.userId, userId)));
-      await this.syncBlock(userId, target.id);
+      if (!input.skipCalendarSync) {
+        await this.syncBlock(userId, target.id);
+      }
     }
 
     const affectedTaskIds = new Set<string>();
@@ -817,6 +869,9 @@ export class PlannerV2Service {
       await this.syncTaskStatusFromSessions(userId, taskId);
     }
 
+    if (input.skipCalendarSync) {
+      return this.serializeBlock(await this.requireOwnedTimeBlock(userId, id));
+    }
     return this.syncBlock(userId, id);
   }
 
@@ -979,6 +1034,7 @@ export class PlannerV2Service {
           status: 'PLANNED',
           notes: session.notes ?? '',
           completedAtEpochMs: null,
+          isDailyFocus: false,
           reminderMinutes: session.reminderMinutes,
           repeatSeriesId: sessionSeriesById.get(session.id) ?? null,
           syncStatus: 'PENDING',
@@ -1181,6 +1237,7 @@ export class PlannerV2Service {
           status: 'PLANNED',
           notes: session.notes ?? '',
           completedAtEpochMs: null,
+          isDailyFocus: false,
           reminderMinutes: session.reminderMinutes,
           repeatSeriesId: sessionSeriesById.get(session.id) ?? null,
           syncStatus: 'PENDING',
@@ -1352,6 +1409,7 @@ export class PlannerV2Service {
         status: 'PLANNED',
         notes: session.notes ?? '',
         completedAtEpochMs: null,
+        isDailyFocus: false,
         reminderMinutes: session.reminderMinutes,
         repeatSeriesId: sessionSeriesId,
         syncStatus: 'PENDING',
@@ -1820,7 +1878,9 @@ export class PlannerV2Service {
       });
       const googleEventId = await calendar.upsertCosEvent({
         eventId: row.googleEventId ?? undefined,
-        title: row.title,
+        title: row.isDailyFocus && !row.title.startsWith('★')
+          ? `★ ${row.title}`
+          : row.title,
         startEpochMs: row.startEpochMs,
         endEpochMs: row.endEpochMs,
         calendarId: row.calendarId ?? undefined,
@@ -1831,6 +1891,7 @@ export class PlannerV2Service {
           ...(row.taskId ? { taskId: row.taskId } : {}),
           revision: String(row.revision),
           colorId,
+          ...(row.isDailyFocus ? { isDailyFocus: 'true' } : {}),
         },
       });
       await this.db
@@ -1869,6 +1930,7 @@ export class PlannerV2Service {
       completedAt: row.completedAtEpochMs
         ? new Date(row.completedAtEpochMs).toISOString()
         : null,
+      isDailyFocus: Boolean(row.isDailyFocus),
       repeatSeriesId: row.repeatSeriesId,
       ownership: 'PLANNER' as const,
       googleEventId: row.googleEventId,
@@ -1884,7 +1946,8 @@ export class PlannerV2Service {
       title: row.title,
       notes: row.description,
       definitionOfDone: row.definitionOfDone ?? null,
-      dailyFocusDate: row.dailyFocusDate ?? null,
+      /** @deprecated Session isDailyFocus is the source of truth. */
+      dailyFocusDate: null,
       outcomeAchieved: Boolean(row.outcomeAchievedAtEpochMs),
       outcomeAchievedAt: row.outcomeAchievedAtEpochMs
         ? new Date(row.outcomeAchievedAtEpochMs).toISOString()
@@ -1906,33 +1969,107 @@ export class PlannerV2Service {
     };
   }
 
-  /** Soft-enforce one Daily Focus per user per product day. */
-  private async clearDailyFocusForDate(
+  private async findDailyFocusSessionOnDate(
     userId: string,
     date: string,
-    exceptTaskId: string | null,
+    exceptSessionId: string | null = null,
   ) {
-    const focused = await this.db
-      .select({ id: tasks.id, revision: tasks.revision })
-      .from(tasks)
+    const dayStart = new Date(`${date}T00:00:00+07:00`).getTime();
+    const dayEnd = dayStart + 86_400_000;
+    const rows = await this.db
+      .select()
+      .from(timeBlocks)
       .where(
         and(
-          eq(tasks.userId, userId),
-          eq(tasks.dailyFocusDate, date),
-          isNull(tasks.deletedAt),
+          eq(timeBlocks.userId, userId),
+          eq(timeBlocks.isDailyFocus, true),
+          isNull(timeBlocks.deletedAt),
+          gte(timeBlocks.startEpochMs, dayStart),
+          lt(timeBlocks.startEpochMs, dayEnd),
         ),
       );
-    for (const task of focused) {
-      if (exceptTaskId && task.id === exceptTaskId) continue;
+    return rows.find((row) => row.id !== exceptSessionId) ?? null;
+  }
+
+  private async clearSessionDailyFocusForDate(
+    userId: string,
+    date: string,
+    exceptSessionId: string | null,
+  ) {
+    const dayStart = new Date(`${date}T00:00:00+07:00`).getTime();
+    const dayEnd = dayStart + 86_400_000;
+    const focused = await this.db
+      .select({ id: timeBlocks.id, revision: timeBlocks.revision })
+      .from(timeBlocks)
+      .where(
+        and(
+          eq(timeBlocks.userId, userId),
+          eq(timeBlocks.isDailyFocus, true),
+          isNull(timeBlocks.deletedAt),
+          gte(timeBlocks.startEpochMs, dayStart),
+          lt(timeBlocks.startEpochMs, dayEnd),
+        ),
+      );
+    for (const block of focused) {
+      if (exceptSessionId && block.id === exceptSessionId) continue;
       await this.db
-        .update(tasks)
+        .update(timeBlocks)
         .set({
-          dailyFocusDate: null,
-          revision: task.revision + 1,
+          isDailyFocus: false,
+          syncStatus: 'PENDING',
+          revision: block.revision + 1,
           updatedAt: new Date(),
         })
-        .where(and(eq(tasks.id, task.id), eq(tasks.userId, userId)));
+        .where(and(eq(timeBlocks.id, block.id), eq(timeBlocks.userId, userId)));
+      await this.syncBlock(userId, block.id);
     }
+  }
+
+  async setSessionDailyFocus(
+    userId: string,
+    sessionId: string,
+    isDailyFocus: boolean,
+    opts?: { replaceDailyFocus?: boolean; startEpochMsOverride?: number },
+  ) {
+    const row = await this.requireOwnedTimeBlock(userId, sessionId);
+    if (!isDailyFocus) {
+      await this.db
+        .update(timeBlocks)
+        .set({
+          isDailyFocus: false,
+          syncStatus: 'PENDING',
+          revision: row.revision + 1,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(timeBlocks.id, sessionId), eq(timeBlocks.userId, userId)));
+      return this.syncBlock(userId, sessionId);
+    }
+    const start = opts?.startEpochMsOverride ?? row.startEpochMs;
+    const date = productDateFromEpoch(start);
+    const existing = await this.findDailyFocusSessionOnDate(userId, date, sessionId);
+    if (existing) {
+      if (!opts?.replaceDailyFocus) {
+        throw Object.assign(
+          new Error('This day already has a Daily Focus Session'),
+          {
+            statusCode: 409,
+            code: 'DAILY_FOCUS_CONFLICT',
+            existingFocusSessionId: existing.id,
+          },
+        );
+      }
+      await this.clearSessionDailyFocusForDate(userId, date, sessionId);
+    }
+    await this.db
+      .update(timeBlocks)
+      .set({
+        isDailyFocus: true,
+        syncStatus: 'PENDING',
+        revision: row.revision + 1,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(timeBlocks.id, sessionId), eq(timeBlocks.userId, userId)));
+    return this.syncBlock(userId, sessionId);
   }
 
   private serializeProject(row: typeof projects.$inferSelect) {
