@@ -19,9 +19,10 @@ import {
   isGoogleCalendarError,
   type GoogleCalendarError,
 } from '../../infrastructure/providers/calendar/googleErrors.js';
+import { GOOGLE_SYNC_HORIZON_DAYS } from './calendarSyncHorizon.js';
 
 const REPLAN_DEBOUNCE_MS = 5 * 60_000;
-const HORIZON_DAYS = 14;
+const HORIZON_DAYS = GOOGLE_SYNC_HORIZON_DAYS;
 
 function dateKey(epochMs: number, timeZone = 'Asia/Ho_Chi_Minh'): string {
   return new Intl.DateTimeFormat('en-CA', {

@@ -99,6 +99,62 @@ describe('GoogleCalendarProvider', () => {
     expect(body.colorId).toBe('11');
   });
 
+  it('reuses an existing Personal OS calendar and does not create a second one', async () => {
+    const onResolved = vi.fn(async () => undefined);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/calendarList') && init?.method === 'PATCH') {
+        return new Response(JSON.stringify({ id: 'pos-a' }), { status: 200 });
+      }
+      if (url.includes('/calendarList')) {
+        return new Response(JSON.stringify({
+          items: [
+            { id: 'pos-a', summary: 'Personal OS' },
+            { id: 'pos-b', summary: 'Personal OS' },
+          ],
+        }), { status: 200 });
+      }
+      if (url.includes('/calendars') && !url.includes('/events') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 'should-not-create' }), { status: 200 });
+      }
+      if (url.includes('/events') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ id: 'evt-1' }), { status: 200 });
+      }
+      return new Response(`unexpected ${url}`, { status: 500 });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const provider = new GoogleCalendarProvider(
+      async () => ({ accessToken: 'access', expiresAt: new Date(Date.now() + 3600_000) }),
+      async () => null,
+      { onWriteCalendarResolved: onResolved },
+    );
+    const id = await provider.upsertCosEvent({
+      title: 'Focus',
+      startEpochMs: 1_000,
+      endEpochMs: 2_000,
+    });
+    expect(id).toBe('evt-1');
+    expect(onResolved).toHaveBeenCalledWith('pos-a');
+    const createCalendar = fetchMock.mock.calls.find(
+      ([url, init]) => init?.method === 'POST'
+        && String(url).includes('/calendars')
+        && !String(url).includes('/events')
+        && !String(url).includes('calendarList'),
+    );
+    expect(createCalendar).toBeUndefined();
+    const hideCalls = fetchMock.mock.calls.filter(
+      ([url, init]) => init?.method === 'PATCH'
+        && String(url).includes('calendarList')
+        && String(url).includes('pos-b'),
+    );
+    expect(hideCalls.length).toBeGreaterThan(0);
+    expect(JSON.parse(String(hideCalls[0]![1]?.body))).toMatchObject({
+      selected: false,
+      hidden: true,
+    });
+  });
+
   it('rejects stored primary write calendar and creates Personal OS instead', async () => {
     const onResolved = vi.fn(async () => undefined);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

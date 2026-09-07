@@ -64,6 +64,8 @@ export type GoogleCalendarProviderOptions = {
 export class GoogleCalendarProvider implements CalendarProvider {
   private readonly fallback = new FakeCalendarProvider();
   private resolvedCosCalendarId: string | null = null;
+  /** In-flight ensure so concurrent upserts share one find/create (no duplicate calendars). */
+  private ensureCosCalendarPromise: Promise<string> | null = null;
   private readonly extraReadCalendarIds: string[];
   private readonly onWriteCalendarResolved?: (calendarId: string) => Promise<void>;
 
@@ -270,6 +272,15 @@ export class GoogleCalendarProvider implements CalendarProvider {
 
   /** Resolve or create the dedicated Personal OS write calendar — never primary / "Ha Son". */
   private async ensureCosCalendarId(accessToken: string): Promise<string> {
+    if (this.ensureCosCalendarPromise) return this.ensureCosCalendarPromise;
+    this.ensureCosCalendarPromise = this.resolveOrCreateCosCalendarId(accessToken)
+      .finally(() => {
+        this.ensureCosCalendarPromise = null;
+      });
+    return this.ensureCosCalendarPromise;
+  }
+
+  private async resolveOrCreateCosCalendarId(accessToken: string): Promise<string> {
     const list = await this.fetchCalendarList(accessToken);
     const dedicated = (item: { id?: string; summary?: string; primary?: boolean } | undefined) => {
       if (!item?.id || item.id === 'primary' || item.primary) return false;
@@ -283,6 +294,7 @@ export class GoogleCalendarProvider implements CalendarProvider {
       const cached = list.find((c) => c.id === this.resolvedCosCalendarId);
       if (dedicated(cached)) {
         await this.ensureWriteCalendarAppearance(accessToken, this.resolvedCosCalendarId);
+        await this.hideDuplicateCosCalendars(accessToken, list, this.resolvedCosCalendarId, dedicated);
         return this.resolvedCosCalendarId;
       }
       console.warn('google.cosCalendar rejecting non-dedicated write calendar', {
@@ -293,13 +305,26 @@ export class GoogleCalendarProvider implements CalendarProvider {
       this.resolvedCosCalendarId = null;
     }
 
-    const match = list.find((c) => dedicated(c));
-    if (match?.id) {
-      this.resolvedCosCalendarId = match.id;
-      console.info('google.cosCalendar resolved', { calendarId: match.id, summary: match.summary });
-      await this.ensureWriteCalendarAppearance(accessToken, match.id);
-      if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(match.id);
-      return match.id;
+    const matches = list.filter((c) => dedicated(c));
+    if (matches.length > 0) {
+      // Prefer exact "Personal OS", then legacy names in COS_CALENDAR_NAMES order.
+      const preferred = COS_CALENDAR_NAMES
+        .map((name) => matches.find((c) => c.summary?.toLowerCase() === name.toLowerCase()))
+        .find((c): c is NonNullable<typeof c> => Boolean(c?.id))
+        ?? matches[0]!;
+      if (matches.length > 1) {
+        console.warn('google.cosCalendar multiple dedicated calendars; reusing one (never create)', {
+          chosen: preferred.id,
+          summary: preferred.summary,
+          duplicates: matches.map((c) => ({ id: c.id, summary: c.summary })),
+        });
+      }
+      this.resolvedCosCalendarId = preferred.id!;
+      console.info('google.cosCalendar resolved', { calendarId: preferred.id, summary: preferred.summary });
+      await this.ensureWriteCalendarAppearance(accessToken, preferred.id!);
+      await this.hideDuplicateCosCalendars(accessToken, list, preferred.id!, dedicated);
+      if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(preferred.id!);
+      return preferred.id!;
     }
 
     const createRes = await fetch('https://www.googleapis.com/calendar/v3/calendars', {
@@ -357,6 +382,45 @@ export class GoogleCalendarProvider implements CalendarProvider {
     console.info('google.cosCalendar created', { calendarId: created.id });
     if (this.onWriteCalendarResolved) await this.onWriteCalendarResolved(created.id);
     return created.id;
+  }
+
+  /** Uncheck extra same-name Personal OS calendars so Google UI stops showing duplicates. */
+  private async hideDuplicateCosCalendars(
+    accessToken: string,
+    list: Array<{ id?: string; summary?: string; primary?: boolean }>,
+    canonicalId: string,
+    dedicated: (item: { id?: string; summary?: string; primary?: boolean } | undefined) => boolean,
+  ): Promise<void> {
+    const extras = list.filter((c) => dedicated(c) && c.id && c.id !== canonicalId);
+    for (const extra of extras) {
+      if (!extra.id) continue;
+      const url =
+        `https://www.googleapis.com/calendar/v3/users/me/calendarList/${encodeURIComponent(extra.id)}`
+        + '?colorRgbFormat=true';
+      const res = await fetch(url, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ selected: false, hidden: true }),
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        console.warn('google.cosCalendar hide duplicate failed', {
+          calendarId: extra.id,
+          summary: extra.summary,
+          googleStatus: res.status,
+          ...parseGoogleErrorBody(detail),
+        });
+      } else {
+        console.info('google.cosCalendar hid duplicate', {
+          calendarId: extra.id,
+          summary: extra.summary,
+          canonicalId,
+        });
+      }
+    }
   }
 
   /** Keep Personal OS calendar selected + dark green in Google's sidebar. */

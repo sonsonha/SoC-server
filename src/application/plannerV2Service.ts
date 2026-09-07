@@ -40,6 +40,7 @@ import {
   sessionOutcomeFromRow,
   type SessionOutcomePayload,
 } from '../domain/sessionOutcome.js';
+import { GOOGLE_SYNC_HORIZON_DAYS } from '../modules/integrations/calendarSyncHorizon.js';
 
 export type PlannerTaskStatus = 'INBOX' | 'SCHEDULED' | 'DONE';
 export type PlannerPriority = 'P1' | 'P2' | 'P3' | 'P4';
@@ -1807,7 +1808,7 @@ export class PlannerV2Service {
   async retryCalendarSync(userId: string): Promise<{ attempted: number; synced: number; failed: number }> {
     const now = Date.now();
     const fromEpochMs = now - 86_400_000;
-    const toEpochMs = now + 14 * 86_400_000;
+    const toEpochMs = now + GOOGLE_SYNC_HORIZON_DAYS * 86_400_000;
     // Include already-SYNCED blocks in the active window so Sync now can refresh
     // Google event colors (priority palette) and not only PENDING/FAILED retries.
     const rows = await this.db
