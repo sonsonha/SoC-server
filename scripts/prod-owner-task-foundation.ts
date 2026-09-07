@@ -4,7 +4,8 @@
  *
  * Flags:
  *   --mutate           apply migration + AI context + seed
- *   --reset-partial    soft-delete existing foundation titles first (owner only)
+ *   --reset-partial    soft-delete foundation titles first (owner only).
+ *                      Skips Sessions that already have a real Google event id.
  */
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { loadConfig, loadDotEnv } from '../src/config.js';
@@ -76,6 +77,9 @@ async function main() {
       const ids = foundationTasks.map((t) => t.id);
       const now = new Date();
       if (ids.length) {
+        // Never soft-delete Sessions that already have a real Google event id.
+        // A prior --reset-partial wiped the current-week plan while leaving
+        // Google events intact (Personal OS Calendar went blank).
         await db
           .update(timeBlocks)
           .set({ deletedAt: now, updatedAt: now })
@@ -84,6 +88,7 @@ async function main() {
               eq(timeBlocks.userId, user.id),
               isNull(timeBlocks.deletedAt),
               inArray(timeBlocks.taskId, ids),
+              sql`(google_event_id is null or google_event_id like 'cos-%')`,
             ),
           );
         await db
