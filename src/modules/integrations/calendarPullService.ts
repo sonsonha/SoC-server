@@ -60,7 +60,11 @@ export function plannerBlockReconciliation(
   },
   event?: CalendarEvent,
 ): 'remove' | 'update' | 'none' {
-  if (!event) return 'remove';
+  // Personal OS Sessions are the source of truth. A missing Google event must
+  // NEVER soft-delete the local row — Cos list gaps / wrong calendar / horizon
+  // misses previously wiped the live Calendar after a correct first paint.
+  // Intentional deletes happen in Personal OS (which then deletes Google).
+  if (!event) return 'none';
   return block.title !== event.title ||
     block.startEpochMs !== event.startEpochMs ||
     block.endEpochMs !== event.endEpochMs ||

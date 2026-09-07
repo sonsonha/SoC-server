@@ -25,13 +25,13 @@ describe('calendar ownership reconciliation', () => {
     expect(isPlannerOwnedCalendarEvent(event)).toBe(false);
   });
 
-  it('removes a local block when its owned Google event was deleted', () => {
+  it('keeps a local Personal OS block when Google list omits the event', () => {
     expect(plannerBlockReconciliation({
       title: event.title,
       startEpochMs: event.startEpochMs,
       endEpochMs: event.endEpochMs,
       syncStatus: 'SYNCED',
-    })).toBe('remove');
+    })).toBe('none');
   });
 
   it('updates a local block when the Google copy was moved and otherwise stays stable', () => {
