@@ -10,6 +10,22 @@ const isoDateTime = z.string().datetime({ offset: true });
 const priority = z.enum(['LOW', 'NORMAL', 'HIGH', 'DROP', 'P1', 'P2', 'P3', 'P4']);
 const seriesScopeSchema = z.enum(['THIS_INSTANCE', 'THIS_AND_FUTURE']);
 
+const sessionOutcomeSchema = z.object({
+  type: z.enum(['NONE', 'CHECKLIST', 'QUANTITY']),
+  items: z.array(z.object({
+    id: z.string().min(1).optional(),
+    text: z.string().trim().min(1).max(500),
+    done: z.boolean().optional(),
+  })).optional(),
+  target: z.number().int().min(0).nullable().optional(),
+  actual: z.number().int().min(0).nullable().optional(),
+  unit: z.string().max(64).nullable().optional(),
+  // Client may send derived progress fields; ignore for persistence.
+  completedCount: z.number().optional(),
+  totalCount: z.number().optional(),
+  progressLabel: z.string().nullable().optional(),
+}).nullable();
+
 const createTaskSchema = z.object({
   title: z.string().trim().min(1).max(240),
   notes: z.string().max(10_000).optional(),
@@ -39,6 +55,7 @@ const createTimeBlockSchema = z.object({
   isDailyFocus: z.boolean().optional(),
   replaceDailyFocus: z.boolean().optional(),
   seriesScope: seriesScopeSchema.optional(),
+  sessionOutcome: sessionOutcomeSchema.optional(),
 });
 
 const createProjectSchema = z.object({

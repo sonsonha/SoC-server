@@ -109,6 +109,46 @@ describe('Planner V2 task management routes', () => {
   });
 });
 
+describe('Planner V2 time-block routes', () => {
+  it('forwards sessionOutcome on PATCH time-block', async () => {
+    const patchTimeBlock = vi.fn().mockResolvedValue({
+      id: 'block-1',
+      sessionOutcome: { type: 'QUANTITY', actual: 1, target: 2, unit: 'applications' },
+    });
+    const app = await plannerApp({ patchTimeBlock });
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/v2/time-blocks/block-1',
+      headers: { ...authorization, 'content-type': 'application/json' },
+      payload: {
+        sessionOutcome: {
+          type: 'QUANTITY',
+          actual: 1,
+          target: 2,
+          unit: 'applications',
+          progressLabel: '1 / 2',
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(patchTimeBlock).toHaveBeenCalledWith(
+      'user-a',
+      'block-1',
+      expect.objectContaining({
+        sessionOutcome: expect.objectContaining({
+          type: 'QUANTITY',
+          actual: 1,
+          target: 2,
+          unit: 'applications',
+        }),
+      }),
+    );
+    await app.close();
+  });
+});
+
 describe('Planner V2 projects and goals routes', () => {
   it('creates a project through the authenticated planner API', async () => {
     const createProject = vi.fn().mockResolvedValue({
