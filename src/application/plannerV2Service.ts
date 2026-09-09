@@ -801,7 +801,7 @@ export class PlannerV2Service {
       await this.db
         .update(timeBlocks)
         .set({
-          ...(hasNotesPatch ? { notes: input.notes ?? null } : {}),
+          ...(hasNotesPatch ? { notes: input.notes ?? '' } : {}),
           ...(hasOutcomePatch
             ? {
               sessionOutcomeType: nextOutcome.type,

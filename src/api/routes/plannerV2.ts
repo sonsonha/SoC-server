@@ -13,17 +13,13 @@ const seriesScopeSchema = z.enum(['THIS_INSTANCE', 'THIS_AND_FUTURE']);
 const sessionOutcomeSchema = z.object({
   type: z.enum(['NONE', 'CHECKLIST', 'QUANTITY']),
   items: z.array(z.object({
-    id: z.string().min(1).optional(),
+    id: z.string().min(1).default(() => crypto.randomUUID()),
     text: z.string().trim().min(1).max(500),
-    done: z.boolean().optional(),
+    done: z.boolean().default(false),
   })).optional(),
   target: z.number().int().min(0).nullable().optional(),
   actual: z.number().int().min(0).nullable().optional(),
   unit: z.string().max(64).nullable().optional(),
-  // Client may send derived progress fields; ignore for persistence.
-  completedCount: z.number().optional(),
-  totalCount: z.number().optional(),
-  progressLabel: z.string().nullable().optional(),
 }).nullable();
 
 const createTaskSchema = z.object({
