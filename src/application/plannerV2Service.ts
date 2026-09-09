@@ -769,11 +769,11 @@ export class PlannerV2Service {
     this.validateWindow(start, end);
 
     const hasOutcomePatch = input.sessionOutcome !== undefined;
+    const hasNotesPatch = input.notes !== undefined;
     const hasStructural =
       input.startAt !== undefined
       || input.endAt !== undefined
       || input.title !== undefined
-      || input.notes !== undefined
       || input.color !== undefined
       || input.reminderMinutes !== undefined
       || input.taskId !== undefined
@@ -783,26 +783,34 @@ export class PlannerV2Service {
     if (input.status !== undefined) {
       await this.setSessionCompletion(userId, id, input.status === 'DONE');
       const afterStatus = await this.requireOwnedTimeBlock(userId, id);
-      if (!hasStructural && !hasOutcomePatch) {
+      if (!hasStructural && !hasOutcomePatch && !hasNotesPatch) {
         return this.serializeBlock(afterStatus);
       }
     }
 
-    // Outcome-only (and status+outcome) patches: update evidence without Google timing sync.
-    if (hasOutcomePatch && !hasStructural) {
+    // Evidence-only patches (Outcome / Session note): persist locally without Google sync.
+    // Google Calendar does not need quantity ticks or private session notes to stay SoT.
+    if ((hasOutcomePatch || hasNotesPatch) && !hasStructural) {
       const current = await this.requireOwnedTimeBlock(userId, id);
-      const nextOutcome = applySessionOutcomePatch(
-        sessionOutcomeFromRow(current),
-        input.sessionOutcome ?? { type: 'NONE' },
-      );
+      const nextOutcome = hasOutcomePatch
+        ? applySessionOutcomePatch(
+          sessionOutcomeFromRow(current),
+          input.sessionOutcome ?? { type: 'NONE' },
+        )
+        : sessionOutcomeFromRow(current);
       await this.db
         .update(timeBlocks)
         .set({
-          sessionOutcomeType: nextOutcome.type,
-          sessionOutcomeItems: nextOutcome.type === 'CHECKLIST' ? nextOutcome.items : null,
-          sessionOutcomeTarget: nextOutcome.type === 'QUANTITY' ? nextOutcome.target : null,
-          sessionOutcomeActual: nextOutcome.type === 'QUANTITY' ? nextOutcome.actual : null,
-          sessionOutcomeUnit: nextOutcome.type === 'QUANTITY' ? nextOutcome.unit : null,
+          ...(hasNotesPatch ? { notes: input.notes ?? null } : {}),
+          ...(hasOutcomePatch
+            ? {
+              sessionOutcomeType: nextOutcome.type,
+              sessionOutcomeItems: nextOutcome.type === 'CHECKLIST' ? nextOutcome.items : null,
+              sessionOutcomeTarget: nextOutcome.type === 'QUANTITY' ? nextOutcome.target : null,
+              sessionOutcomeActual: nextOutcome.type === 'QUANTITY' ? nextOutcome.actual : null,
+              sessionOutcomeUnit: nextOutcome.type === 'QUANTITY' ? nextOutcome.unit : null,
+            }
+            : {}),
           revision: current.revision + 1,
           updatedAt: new Date(),
         })
@@ -1809,8 +1817,8 @@ export class PlannerV2Service {
     const now = Date.now();
     const fromEpochMs = now - 86_400_000;
     const toEpochMs = now + GOOGLE_SYNC_HORIZON_DAYS * 86_400_000;
-    // Include already-SYNCED blocks in the active window so Sync now can refresh
-    // Google event colors (priority palette) and not only PENDING/FAILED retries.
+    // Only retry blocks that need push. Re-pushing every SYNCED Session in the
+    // 92-day horizon (~300 sequential Google calls) made Sync appear stuck.
     const rows = await this.db
       .select({ id: timeBlocks.id, syncStatus: timeBlocks.syncStatus })
       .from(timeBlocks)
@@ -1820,7 +1828,7 @@ export class PlannerV2Service {
           isNull(timeBlocks.deletedAt),
           lt(timeBlocks.startEpochMs, toEpochMs),
           gt(timeBlocks.endEpochMs, fromEpochMs),
-          inArray(timeBlocks.syncStatus, ['PENDING', 'FAILED', 'SYNCED']),
+          inArray(timeBlocks.syncStatus, ['PENDING', 'FAILED']),
         ),
       );
     let synced = 0;
