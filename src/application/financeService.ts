@@ -1289,6 +1289,8 @@ export class FinanceService {
     opts: {
       type?: 'all' | 'income' | 'expense' | 'debt';
       month?: string;
+      from?: string;
+      to?: string;
       sourceId?: string;
       categoryId?: string;
       limit?: number;
@@ -1299,7 +1301,15 @@ export class FinanceService {
     const limit = Math.min(opts.limit ?? 100, 500);
     let start: string | null = null;
     let end: string | null = null;
-    if (opts.month) {
+    if (opts.from || opts.to) {
+      if (opts.from) this.assertDate(opts.from);
+      if (opts.to) this.assertDate(opts.to);
+      start = opts.from ?? null;
+      end = opts.to ?? null;
+      if (start && end && start > end) {
+        throw financeError('from must be on or before to');
+      }
+    } else if (opts.month) {
       const bounds = monthBounds(opts.month);
       start = bounds.start;
       end = bounds.end;

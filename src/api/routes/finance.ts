@@ -408,6 +408,8 @@ export async function financeRoutes(
       const query = z.object({
         type: z.enum(['all', 'income', 'expense', 'debt']).optional(),
         month: monthSchema.optional(),
+        from: dateSchema.optional(),
+        to: dateSchema.optional(),
         sourceId: z.string().optional(),
         categoryId: z.string().optional(),
         limit: z.coerce.number().int().positive().max(500).optional(),
