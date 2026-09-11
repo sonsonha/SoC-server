@@ -325,6 +325,8 @@ export async function financeRoutes(
         name: z.string().trim().min(1).max(120),
         outstandingVnd: z.number().int().nonnegative(),
         monthlyRequiredVnd: z.number().int().nonnegative(),
+        borrowedAt: dateSchema.nullable().optional(),
+        lastPaidAt: dateSchema.nullable().optional(),
       }).parse(request.body ?? {});
       return reply.code(201).send(await deps.finance.createDebt(userId, body));
     } catch (err) {
@@ -340,6 +342,8 @@ export async function financeRoutes(
         name: z.string().trim().min(1).max(120).optional(),
         outstandingVnd: z.number().int().nonnegative().optional(),
         monthlyRequiredVnd: z.number().int().nonnegative().optional(),
+        borrowedAt: dateSchema.nullable().optional(),
+        lastPaidAt: dateSchema.nullable().optional(),
         active: z.boolean().optional(),
       }).parse(request.body ?? {});
       return reply.send(await deps.finance.patchDebt(userId, id, body));

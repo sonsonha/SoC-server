@@ -837,7 +837,13 @@ export class FinanceService {
 
   async createDebt(
     userId: string,
-    input: { name: string; outstandingVnd: number; monthlyRequiredVnd: number },
+    input: {
+      name: string;
+      outstandingVnd: number;
+      monthlyRequiredVnd: number;
+      borrowedAt?: string | null;
+      lastPaidAt?: string | null;
+    },
   ) {
     const name = input.name.trim();
     if (!name) throw financeError('Name is required');
@@ -847,6 +853,8 @@ export class FinanceService {
     if (!Number.isInteger(input.monthlyRequiredVnd) || input.monthlyRequiredVnd < 0) {
       throw financeError('monthlyRequiredVnd must be a non-negative integer');
     }
+    const borrowedAt = this.normalizeOptionalDate(input.borrowedAt);
+    const lastPaidAt = this.normalizeOptionalDate(input.lastPaidAt);
     const id = randomUUID();
     const now = new Date();
     await this.db.insert(financeDebts).values({
@@ -855,6 +863,8 @@ export class FinanceService {
       name: name.slice(0, 120),
       outstandingVnd: input.outstandingVnd,
       monthlyRequiredVnd: input.monthlyRequiredVnd,
+      borrowedAt,
+      lastPaidAt,
       active: true,
       revision: 1,
       updatedAt: now,
@@ -870,6 +880,8 @@ export class FinanceService {
       name: string;
       outstandingVnd: number;
       monthlyRequiredVnd: number;
+      borrowedAt: string | null;
+      lastPaidAt: string | null;
       active: boolean;
     }>,
   ) {
@@ -883,12 +895,20 @@ export class FinanceService {
     ) {
       throw financeError('monthlyRequiredVnd must be a non-negative integer');
     }
+    const nextBorrowedAt = input.borrowedAt !== undefined
+      ? this.normalizeOptionalDate(input.borrowedAt)
+      : row.borrowedAt;
+    const nextLastPaidAt = input.lastPaidAt !== undefined
+      ? this.normalizeOptionalDate(input.lastPaidAt)
+      : row.lastPaidAt;
     await this.db
       .update(financeDebts)
       .set({
         name: input.name != null ? input.name.trim().slice(0, 120) : row.name,
         outstandingVnd: input.outstandingVnd ?? row.outstandingVnd,
         monthlyRequiredVnd: input.monthlyRequiredVnd ?? row.monthlyRequiredVnd,
+        borrowedAt: nextBorrowedAt,
+        lastPaidAt: nextLastPaidAt,
         active: input.active ?? row.active,
         revision: row.revision + 1,
         updatedAt: new Date(),
@@ -946,6 +966,7 @@ export class FinanceService {
         .update(financeDebts)
         .set({
           outstandingVnd: debt.outstandingVnd - input.amountVnd,
+          lastPaidAt: !debt.lastPaidAt || paidAt >= debt.lastPaidAt ? paidAt : debt.lastPaidAt,
           revision: debt.revision + 1,
           updatedAt: now,
         })
@@ -1413,6 +1434,14 @@ export class FinanceService {
     }
   }
 
+  private normalizeOptionalDate(value: string | null | undefined): string | null {
+    if (value == null) return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    this.assertDate(trimmed);
+    return trimmed;
+  }
+
   private serializeSettings(row: typeof financeAllocationSettings.$inferSelect) {
     return {
       id: row.id,
@@ -1459,6 +1488,8 @@ export class FinanceService {
       name: row.name,
       outstandingVnd: row.outstandingVnd,
       monthlyRequiredVnd: row.monthlyRequiredVnd,
+      borrowedAt: row.borrowedAt ?? null,
+      lastPaidAt: row.lastPaidAt ?? null,
       active: row.active,
       revision: row.revision,
       updatedAt: row.updatedAt.toISOString(),

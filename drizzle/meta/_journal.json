@@ -225,6 +225,13 @@
       "when": 1720000033000,
       "tag": "0033_session_outcome",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1720000034000,
+      "tag": "0034_finance_debt_dates",
+      "breakpoints": true
     }
   ]
 }

@@ -163,6 +163,10 @@ export const financeDebts = pgTable(
     name: text('name').notNull(),
     outstandingVnd: integer('outstanding_vnd').notNull().default(0),
     monthlyRequiredVnd: integer('monthly_required_vnd').notNull().default(0),
+    /** Calendar date the debt was opened / borrowed (YYYY-MM-DD). */
+    borrowedAt: date('borrowed_at'),
+    /** Calendar date of the latest payment (YYYY-MM-DD); editable for corrections. */
+    lastPaidAt: date('last_paid_at'),
     active: boolean('active').notNull().default(true),
     ...syncColumns,
   },
