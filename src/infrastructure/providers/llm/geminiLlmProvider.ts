@@ -1,5 +1,3 @@
-import type { AppConfig } from '../../../config.js';
-import { FakeLlmProvider } from './fakeLlmProvider.js';
 import type {
   IntakeInterpretation,
   LlmProvider,
@@ -10,8 +8,6 @@ import {
   INTAKE_JSON_PROMPT,
   intakeSchema,
   normalizeIntake,
-  structureJsonPrompt,
-  structureSchema,
 } from './shared.js';
 
 export class GeminiLlmProvider implements LlmProvider {
@@ -23,13 +19,14 @@ export class GeminiLlmProvider implements LlmProvider {
     return normalizeIntake(intakeSchema.parse(raw));
   }
 
-  async structurePreparation(input: {
+  async structurePreparation(_input: {
     topic: string;
     timeBudgetMinutes: number;
     candidate: { title: string; url: string; snippet: string };
   }): Promise<PreparationStructure> {
-    const raw = await this.generateJson(structureJsonPrompt(input));
-    return structureSchema.parse(raw);
+    throw new Error(
+      'Live LLM preparation structuring is disabled. Use FakeLlmProvider for prep pipelines.',
+    );
   }
 
   async structureGoal(prompt: string): Promise<unknown> {
@@ -58,4 +55,4 @@ export class GeminiLlmProvider implements LlmProvider {
   }
 }
 
-export { intakeSchema, structureSchema };
+export { intakeSchema };

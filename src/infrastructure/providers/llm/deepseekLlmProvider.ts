@@ -8,8 +8,6 @@ import {
   INTAKE_JSON_PROMPT,
   intakeSchema,
   normalizeIntake,
-  structureJsonPrompt,
-  structureSchema,
 } from './shared.js';
 
 export type DeepSeekUsage = {
@@ -52,13 +50,22 @@ export class DeepSeekLlmProvider implements LlmProvider {
     return normalizeIntake(intakeSchema.parse(raw));
   }
 
-  async structurePreparation(input: {
+  async structurePreparation(_input: {
     topic: string;
     timeBudgetMinutes: number;
     candidate: { title: string; url: string; snippet: string };
   }): Promise<PreparationStructure> {
-    const raw = await this.generateJson(structureJsonPrompt(input), { thinking: false });
-    return structureSchema.parse(raw);
+    // Prep/worker pipelines must use FakeLlmProvider — never paid DeepSeek.
+    console.error('deepseek.structurePreparation_blocked', {
+      provider: 'deepseek',
+      reason: 'AI only allowed on user-initiated paths (intake / goal-structure)',
+    });
+    throw new DeepSeekProviderError(
+      'Live LLM preparation structuring is disabled. Use FakeLlmProvider for prep pipelines.',
+      500,
+      'AI_POLICY_BLOCKED',
+      false,
+    );
   }
 
   /** Goal structuring: JSON object. Pro uses thinking; Flash skips it (cost). */

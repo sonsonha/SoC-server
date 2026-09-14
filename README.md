@@ -15,14 +15,16 @@ Fastify + Drizzle + PostgreSQL modular monolith. Phase 00 delivers **device auth
 | Mode | Env |
 |------|-----|
 | Fake (default) | `USE_FAKE_PROVIDERS=true` and `LLM_PROVIDER=auto` |
-| **DeepSeek (production Goal Structuring)** | `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` + `DEEPSEEK_MODEL=deepseek-v4-flash` |
+| **DeepSeek (production Goal Structuring + Intake only)** | `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` + `DEEPSEEK_MODEL=deepseek-v4-flash` |
 | Gemini | `LLM_PROVIDER=gemini` + `GEMINI_API_KEY`, or `USE_FAKE_PROVIDERS=false` + key with `LLM_PROVIDER=auto` |
+
+**Policy:** Live AI is **user-initiated only** (`POST /v2/ai/goal-structure`, Secretary intake). Preparation / `proactive.scan` / `calendar.pull` → replan workers always use `FakeLlmProvider` — they must never call DeepSeek/Gemini. Live providers reject `structurePreparation`.
 
 - Base URL: `https://api.deepseek.com` (Chat Completions)
 - Default model: **`deepseek-v4-flash`** (cheapest; ~3× lower than `deepseek-v4-pro` off-peak)
 - Set `DEEPSEEK_MODEL=deepseek-v4-pro` if you need Pro + thinking for harder goals
 - `DEEPSEEK_API_KEY` is **Railway/backend only** — never put it in Vercel `NEXT_PUBLIC_*`
-- Tip: `USE_FAKE_PROVIDERS=true` + `LLM_PROVIDER=deepseek` uses live DeepSeek while maps/search stay fake
+- Tip: `USE_FAKE_PROVIDERS=true` + `LLM_PROVIDER=deepseek` uses live DeepSeek for Goal/Intake while maps/search stay fake
 
 On startup logs `Provider selection { llm, fakeProviders }`.
 

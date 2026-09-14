@@ -833,7 +833,7 @@ export class PlanService {
 
     for (const block of result.blocks) {
       const existing = blockRows.find((b) => b.id === block.id);
-      const prepChanged =
+      const timeOrPrepChanged =
         block.preparationId != null &&
         (!existing ||
           existing.startEpochMs !== block.startEpochMs ||
@@ -876,8 +876,17 @@ export class PlanService {
           },
         });
 
-      if (prepChanged && block.preparationId) {
-        prepIdsToRun.add(block.preparationId);
+      // Never re-run READY prep from background replan (was burning DeepSeek via workers).
+      if (timeOrPrepChanged && block.preparationId) {
+        const prepRows = await this.db
+          .select({ status: preparations.status })
+          .from(preparations)
+          .where(eq(preparations.id, block.preparationId))
+          .limit(1);
+        const status = prepRows[0]?.status;
+        if (status === 'PENDING' || status === 'PREPARING' || status === 'FAILED') {
+          prepIdsToRun.add(block.preparationId);
+        }
       }
     }
 

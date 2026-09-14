@@ -17,6 +17,7 @@ import type { Db } from './infrastructure/db/client.js';
 import { JobQueue } from './infrastructure/jobs/jobQueue.js';
 import { registerPreparationReplaceJob } from './infrastructure/jobs/preparationReplace.js';
 import { createLlmProvider } from './infrastructure/providers/llm/index.js';
+import { FakeLlmProvider } from './infrastructure/providers/llm/fakeLlmProvider.js';
 import { createSearchProvider } from './infrastructure/providers/search/index.js';
 import {
   createPlacesProvider,
@@ -150,7 +151,13 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
 
   const jobQueue = deps.jobQueue ?? new JobQueue();
   const searchProvider = createSearchProvider(deps.config);
-  const llmProvider = createLlmProvider(deps.config);
+  /** Live LLM — only user-initiated HTTP paths (intake + Goal Structuring). */
+  const userLlmProvider = createLlmProvider(deps.config);
+  /**
+   * Prep / worker pipelines must never call paid AI APIs.
+   * Always local FakeLlmProvider even when LLM_PROVIDER=deepseek.
+   */
+  const preparationLlmProvider = new FakeLlmProvider();
   const placesProvider = createPlacesProvider(deps.config);
   const distanceProvider = createDistanceMatrixProvider(deps.config);
   const pushProvider = deps.pushProvider ?? createPushProvider(deps.config);
@@ -198,7 +205,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   const preparationService = new PreparationService(
     deps.db,
     searchProvider,
-    llmProvider,
+    preparationLlmProvider,
     placesProvider,
     distanceProvider,
   );
@@ -241,7 +248,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
   const weeklyPlanService = new WeeklyPlanService(deps.db, jobQueue, planService);
   const goalPlanningService = new GoalPlanningService(deps.db);
   const planningScheduler = new PlanningScheduler(deps.db, jobQueue);
-  const intakeService = new IntakeService(deps.db, llmProvider, jobQueue);
+  const intakeService = new IntakeService(deps.db, userLlmProvider, jobQueue);
   const todayService = new TodayService(deps.db);
   const completionService = new CompletionService(deps.db);
   const feedbackService = new FeedbackService(deps.db, jobQueue);
@@ -393,7 +400,7 @@ export async function buildApp(deps: AppDeps): Promise<BuiltApp> {
     deps.db,
     identityService,
     plannerV2Service,
-    llmProvider,
+    userLlmProvider,
   );
   await aiGoalRoutes(app, {
     deviceService,
