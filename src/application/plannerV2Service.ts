@@ -36,6 +36,7 @@ import {
 import { normalizeDailyFocusDate, productDateFromEpoch, resolveFocusOnSessionMove } from './dailyFocus.js';
 import {
   applySessionOutcomePatch,
+  normalizeSessionOutcome,
   serializeSessionOutcome,
   sessionOutcomeFromRow,
   type SessionOutcomePayload,
@@ -501,6 +502,7 @@ export class PlannerV2Service {
       return this.serializeTask((await this.requireOwnedTask(userId, id)));
     }
 
+    const reopening = input.status === 'SCHEDULED';
     const status = input.status === undefined
       ? row.status
       : input.status === 'SCHEDULED'
@@ -509,6 +511,9 @@ export class PlannerV2Service {
     const completedAtEpochMs = input.status === undefined
       ? row.completedAtEpochMs
       : null;
+    const outcomeAchievedAtEpochMs = reopening
+      ? null
+      : row.outcomeAchievedAtEpochMs;
 
     const nextNotes = input.notes === undefined ? row.description : input.notes;
     const nextTitle = input.title ?? row.title;
@@ -554,6 +559,9 @@ export class PlannerV2Service {
           priority: nextPriority,
           status: isSource ? status : target.status,
           completedAtEpochMs: isSource ? completedAtEpochMs : target.completedAtEpochMs,
+          outcomeAchievedAtEpochMs: isSource
+            ? outcomeAchievedAtEpochMs
+            : target.outcomeAchievedAtEpochMs,
           repeatSeriesId: input.repeatSeriesId === undefined
             ? target.repeatSeriesId
             : input.repeatSeriesId,
@@ -595,6 +603,10 @@ export class PlannerV2Service {
           await this.syncBlock(userId, block.id);
         }
       }
+    }
+
+    if (reopening) {
+      await this.syncTaskStatusFromSessions(userId, id);
     }
 
     const updated = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
@@ -681,6 +693,12 @@ export class PlannerV2Service {
     const sessionSeriesId = propagateFuture
       ? (input.repeatSeriesId ?? randomUUID())
       : (input.repeatSeriesId ?? null);
+    const nextOutcome = input.sessionOutcome !== undefined
+      ? applySessionOutcomePatch(
+        normalizeSessionOutcome({ type: 'NONE' }),
+        input.sessionOutcome ?? { type: 'NONE' },
+      )
+      : normalizeSessionOutcome({ type: 'NONE' });
     await this.db.insert(timeBlocks).values({
       id,
       userId,
@@ -696,6 +714,11 @@ export class PlannerV2Service {
       isDailyFocus: false,
       reminderMinutes: input.reminderMinutes ?? null,
       repeatSeriesId: sessionSeriesId,
+      sessionOutcomeType: nextOutcome.type,
+      sessionOutcomeItems: nextOutcome.type === 'CHECKLIST' ? nextOutcome.items : null,
+      sessionOutcomeTarget: nextOutcome.type === 'QUANTITY' ? nextOutcome.target : null,
+      sessionOutcomeActual: nextOutcome.type === 'QUANTITY' ? nextOutcome.actual : null,
+      sessionOutcomeUnit: nextOutcome.type === 'QUANTITY' ? nextOutcome.unit : null,
       syncStatus: 'PENDING',
       revision: 1,
       updatedAt: new Date(),
