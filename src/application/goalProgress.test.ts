@@ -236,4 +236,67 @@ describe('buildGoalProgress', () => {
     expect(progress.insight.message).toContain('The outcome moved from 5.5 to 6');
     expect(progress.insight.message).toContain('since July');
   });
+
+  it('COUNT planned/completed use Session Quantity actuals and targets', () => {
+    const processes: GoalProcess[] = [
+      {
+        id: 'proc-1',
+        name: 'Quality applications',
+        measurementType: 'COUNT',
+        targetValue: 4,
+        unit: 'Applications',
+        period: 'WEEK',
+        active: true,
+      },
+    ];
+    const tasks: GoalTaskEvidence[] = [
+      task({ id: 'apps', status: 'SCHEDULED', completedAt: null, dueAt: '2026-08-17T12:00:00.000+07:00' }),
+    ];
+    const blocks: GoalBlockEvidence[] = [
+      block({
+        id: 'thu',
+        taskId: 'apps',
+        startAt: '2026-08-17T06:00:00.000Z',
+        endAt: '2026-08-17T08:00:00.000Z',
+        durationMinutes: 120,
+        status: 'DONE',
+        outcomeType: 'QUANTITY',
+        outcomeTarget: 1,
+        outcomeActual: 4,
+      }),
+      block({
+        id: 'fri',
+        taskId: 'apps',
+        startAt: '2026-08-18T01:00:00.000Z',
+        endAt: '2026-08-18T03:00:00.000Z',
+        durationMinutes: 120,
+        status: 'DONE',
+        outcomeType: 'QUANTITY',
+        outcomeTarget: 2,
+        outcomeActual: 2,
+      }),
+    ];
+
+    const progress = buildGoalProgress(processes, [], tasks, blocks, now);
+    expect(progress.processes[0]?.thisWeek.planned).toBe(3); // 1 + 2 targets
+    expect(progress.processes[0]?.thisWeek.completed).toBe(6); // 4 + 2 actuals
+    expect(progress.processes[0]?.thisWeek.target).toBe(4);
+  });
+
+  it('COUNT falls back to Session count when Quantity is absent', () => {
+    const processes: GoalProcess[] = [
+      { id: 'proc-1', name: 'Applications', measurementType: 'COUNT', targetValue: 4, unit: 'Applications', period: 'WEEK', active: true },
+    ];
+    const tasks: GoalTaskEvidence[] = [
+      task({ id: 'apps', status: 'SCHEDULED', completedAt: null }),
+    ];
+    const blocks: GoalBlockEvidence[] = [
+      block({ id: 'a', taskId: 'apps', startAt: '2026-08-17T06:00:00.000Z', status: 'DONE' }),
+      block({ id: 'b', taskId: 'apps', startAt: '2026-08-18T01:00:00.000Z', status: 'PLANNED' }),
+    ];
+
+    const progress = buildGoalProgress(processes, [], tasks, blocks, now);
+    expect(progress.processes[0]?.thisWeek.planned).toBe(2);
+    expect(progress.processes[0]?.thisWeek.completed).toBe(1);
+  });
 });

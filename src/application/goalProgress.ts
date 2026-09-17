@@ -73,6 +73,12 @@ export type GoalBlockEvidence = {
   startAt: string;
   endAt: string;
   durationMinutes: number;
+  /** Session execution status — DONE means the block was marked complete. */
+  status?: string | null;
+  /** Optional Session Outcome (quantity/checklist) — drives COUNT when present. */
+  outcomeType?: 'NONE' | 'CHECKLIST' | 'QUANTITY' | null;
+  outcomeTarget?: number | null;
+  outcomeActual?: number | null;
 };
 
 export type GoalProgressBucket = {
@@ -288,6 +294,80 @@ function taskInWindow(task: GoalTaskEvidence, blocks: GoalBlockEvidence[], start
   return taskPlannedMinutes(task, blocks, start, end) > 0;
 }
 
+function isBlockDone(block: GoalBlockEvidence) {
+  const status = (block.status ?? '').toUpperCase();
+  return status === 'DONE' || status === 'COMPLETED';
+}
+
+function linkedBlocksInWindow(
+  linkedTaskIds: Set<string>,
+  blocks: GoalBlockEvidence[],
+  start: Date,
+  end: Date,
+) {
+  return blocks.filter(
+    (block) =>
+      block.taskId != null
+      && linkedTaskIds.has(block.taskId)
+      && within(block.startAt, start, end),
+  );
+}
+
+/**
+ * COUNT process evidence:
+ * 1. QUANTITY sessions → sum targets (planned) / sum actuals (completed)
+ * 2. Else calendar sessions → session count / DONE session count
+ * 3. Else legacy task counts
+ */
+function computeCountBucket(
+  process: GoalProcess,
+  linkedTasks: GoalTaskEvidence[],
+  blocks: GoalBlockEvidence[],
+  start: Date,
+  end: Date,
+  target: number,
+): GoalProgressBucket {
+  const linkedIds = new Set(linkedTasks.map((task) => task.id));
+  const windowBlocks = linkedBlocksInWindow(linkedIds, blocks, start, end);
+  const quantityBlocks = windowBlocks.filter((block) => block.outcomeType === 'QUANTITY');
+
+  if (quantityBlocks.length > 0) {
+    const planned = quantityBlocks.reduce((sum, block) => {
+      const targetValue = block.outcomeTarget;
+      return sum + (typeof targetValue === 'number' && targetValue > 0 ? targetValue : 1);
+    }, 0);
+    const completed = quantityBlocks.reduce((sum, block) => {
+      const actual = block.outcomeActual;
+      if (typeof actual !== 'number' || actual <= 0) return sum;
+      return sum + actual;
+    }, 0);
+    return {
+      target,
+      planned,
+      completed,
+      unit: process.unit || undefined,
+    };
+  }
+
+  if (windowBlocks.length > 0) {
+    return {
+      target,
+      planned: windowBlocks.length,
+      completed: windowBlocks.filter((block) => isBlockDone(block)).length,
+      unit: process.unit || undefined,
+    };
+  }
+
+  const plannedTasks = linkedTasks.filter((task) => taskInWindow(task, blocks, start, end));
+  const completedTasks = linkedTasks.filter((task) => task.status === 'DONE' && within(task.completedAt, start, end));
+  return {
+    target,
+    planned: plannedTasks.length,
+    completed: completedTasks.length,
+    unit: process.unit || undefined,
+  };
+}
+
 function computeBucket(
   process: GoalProcess,
   tasks: GoalTaskEvidence[],
@@ -309,10 +389,9 @@ function computeBucket(
 
   const target = targetForWindow(process, start, end);
 
-  const plannedTasks = linkedTasks.filter((task) => taskInWindow(task, blocks, start, end));
-  const completedTasks = linkedTasks.filter((task) => task.status === 'DONE' && within(task.completedAt, start, end));
-
   if (process.measurementType === 'BINARY') {
+    const plannedTasks = linkedTasks.filter((task) => taskInWindow(task, blocks, start, end));
+    const completedTasks = linkedTasks.filter((task) => task.status === 'DONE' && within(task.completedAt, start, end));
     return {
       target,
       planned: plannedTasks.length > 0 ? 1 : 0,
@@ -321,12 +400,7 @@ function computeBucket(
     };
   }
 
-  return {
-    target,
-    planned: plannedTasks.length,
-    completed: completedTasks.length,
-    unit: process.unit || undefined,
-  };
+  return computeCountBucket(process, linkedTasks, blocks, start, end, target);
 }
 
 export function buildGoalProgress(
