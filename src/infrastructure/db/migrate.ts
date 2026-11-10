@@ -2,17 +2,13 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { migrate } from 'drizzle-orm/postgres-js/migrator';
 import postgres from 'postgres';
 import path from 'node:path';
-import { loadConfig, normalizeDatabaseUrl } from '../../config.js';
+import { loadConfig, normalizeDatabaseUrl, postgresConnectionOptions } from '../../config.js';
 
 export async function runMigrations(databaseUrl: string): Promise<void> {
   const url = normalizeDatabaseUrl(databaseUrl);
-  const needsSsl =
-    /sslmode=require/i.test(url) ||
-    /\.rlwy\.net/i.test(url) ||
-    /\.railway\.app/i.test(url);
   const client = postgres(url, {
     max: 1,
-    ssl: needsSsl ? 'require' : undefined,
+    ...postgresConnectionOptions(url),
   });
   const db = drizzle(client);
   const migrationsFolder =

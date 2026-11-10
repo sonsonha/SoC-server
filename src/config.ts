@@ -89,7 +89,32 @@ export function normalizeDatabaseUrl(raw: string): string {
   }
   // Strip accidental "DATABASE_URL=" pasted into the value box.
   v = v.replace(/^DATABASE_URL=/i, '').trim();
+  // Neon connection strings add channel_binding=require; postgres.js would forward
+  // it as a server startup parameter, which Postgres rejects.
+  if (/[?&]channel_binding=/i.test(v)) {
+    try {
+      const u = new URL(v);
+      u.searchParams.delete('channel_binding');
+      v = u.toString();
+    } catch {
+      // leave unparseable URLs untouched; postgres.js will report the real error
+    }
+  }
   return v;
+}
+
+export function postgresConnectionOptions(url: string): {
+  ssl: 'require' | undefined;
+  prepare: boolean;
+} {
+  const needsSsl =
+    /sslmode=require/i.test(url) ||
+    /\.rlwy\.net/i.test(url) ||
+    /\.railway\.app/i.test(url) ||
+    /\.neon\.tech/i.test(url);
+  // Neon's pooled endpoint is PgBouncer in transaction mode: no prepared statements.
+  const pooled = /-pooler\./i.test(url);
+  return { ssl: needsSsl ? 'require' : undefined, prepare: !pooled };
 }
 
 /** Load backend/.env into process.env when keys are unset (no dotenv dependency). */

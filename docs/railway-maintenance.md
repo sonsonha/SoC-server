@@ -38,3 +38,26 @@ Optional one-shot smoke (not CI):
 ```bash
 DEEPSEEK_API_KEY=... npm run ai:smoke-goal-structure
 ```
+
+## Database on Neon
+
+Production Postgres lives on Neon. Railway only runs the API container.
+
+1. Create a Neon project (same region as Railway, e.g. `aws-ap-southeast-1`).
+2. Copy the **direct** connection string (host without `-pooler`). The pooled
+   endpoint also works: the client turns off prepared statements for `-pooler` hosts.
+3. Move existing data from Railway Postgres (run locally; client tools must be the same or newer major version than both servers):
+
+   ```bash
+   pg_dump --format=custom --no-owner --no-acl "$OLD_RAILWAY_DATABASE_URL" -f secretary.dump
+   pg_restore --no-owner --no-acl --dbname "$NEON_DATABASE_URL" secretary.dump
+   ```
+
+   The dump includes the `drizzle.__drizzle_migrations` table, so the release
+   hook does not re-run old migrations.
+4. On Railway, set `DATABASE_URL` to the Neon URL and redeploy. The release hook
+   runs pending migrations against Neon.
+5. Check `/health`, then remove the old Railway Postgres service.
+
+`channel_binding=require` in the Neon URL is stripped automatically; SSL is
+forced for `*.neon.tech` hosts.

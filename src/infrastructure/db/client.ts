@@ -1,6 +1,7 @@
 import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from './schema/index.js';
+import { normalizeDatabaseUrl, postgresConnectionOptions } from '../../config.js';
 
 export type Db = PostgresJsDatabase<typeof schema>;
 
@@ -8,17 +9,11 @@ let sqlClient: ReturnType<typeof postgres> | null = null;
 let dbInstance: Db | null = null;
 
 export function createDb(databaseUrl: string): Db {
-  // Defensive: strip accidental "DATABASE_URL=" pasted into Railway Value field.
-  const url = databaseUrl.replace(/^DATABASE_URL=/i, '').trim();
-  // Railway Postgres often requires TLS on the public URL; internal URL may not.
-  const needsSsl =
-    /sslmode=require/i.test(url) ||
-    /\.rlwy\.net/i.test(url) ||
-    /\.railway\.app/i.test(url);
+  const url = normalizeDatabaseUrl(databaseUrl);
   sqlClient = postgres(url, {
     max: 10,
     connect_timeout: 10,
-    ssl: needsSsl ? 'require' : undefined,
+    ...postgresConnectionOptions(url),
   });
   dbInstance = drizzle(sqlClient, { schema });
   return dbInstance;
